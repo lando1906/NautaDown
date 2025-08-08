@@ -25,11 +25,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Configuración del correo desde variables de entorno
-EMAIL = "seendmessenger@gmail.com"
-PASSWORD = "fzhtsyaoukqzhmtr"
-IMAP_SERVER = "imap.gmail.com"
-SMTP_SERVER = "smtp.gmail.com"
-SMTP_PORT = "587"
+EMAIL = "davidacosta05@nauta.com.cu"
+PASSWORD = "David@05"
+IMAP_SERVER = "imap.nauta.cu"
+IMAP_PORT = "143"
+SMTP_SERVER = "smtp.nauta.cu"
+SMTP_PORT = "25"
 RESPONSE_TEXT = "¡Hola! Gracias por tu mensaje. Estoy online y te responderé pronto."
 
 # Variable para almacenar el estado
@@ -126,29 +127,36 @@ def check_emails():
                             subject = email_msg['Subject'] or ""
                             body = ""
 
+                            # Extraer solo el texto plano del cuerpo del mensaje
                             if email_msg.is_multipart():
                                 for part in email_msg.walk():
                                     content_type = part.get_content_type()
                                     content_disposition = str(part.get("Content-Disposition"))
+                                    # Ignorar cualquier parte que sea adjunto
                                     if content_type == "text/plain" and "attachment" not in content_disposition:
                                         body = part.get_payload(decode=True).decode(errors='ignore')
                                         break
                             else:
-                                body = email_msg.get_payload(decode=True).decode(errors='ignore')
+                                # Si no es multiparte, solo procesar si no es un adjunto
+                                if "attachment" not in str(email_msg.get("Content-Disposition", "")):
+                                    body = email_msg.get_payload(decode=True).decode(errors='ignore')
 
-                            # Verificar si el mensaje contiene "/dw" seguido de una URL
-                            if '/dw' in body.lower():
+                            # Verificar si el mensaje contiene el comando /dw explícito
+                            if body and '/dw' in body.lower():
                                 logger.info(f"Comando /dw detectado de {from_email}")
                                 # Buscar la URL después del comando /dw
                                 lines = body.split('\n')
                                 url = None
                                 for line in lines:
                                     if '/dw' in line.lower():
+                                        # Buscar la primera URL válida después de /dw
                                         parts = line.split()
-                                        for part in parts:
-                                            if part.lower().startswith(('http://', 'https://')):
-                                                url = part
-                                                break
+                                        for i, part in enumerate(parts):
+                                            if part.lower() == '/dw' and i+1 < len(parts):
+                                                next_part = parts[i+1]
+                                                if next_part.lower().startswith(('http://', 'https://')):
+                                                    url = next_part
+                                                    break
                                         if url:
                                             break
                                 
@@ -167,7 +175,7 @@ def check_emails():
                                     logger.error("No se encontró URL válida después del comando /dw")
                             
                             # Verificar si el mensaje contiene "Hola" (case insensitive)
-                            elif any(keyword in body.lower() or keyword in subject.lower() 
+                            elif body and any(keyword in body.lower() or keyword in subject.lower() 
                                     for keyword in ['hola', 'hello', 'hi']):
                                 logger.info(f"Mensaje con 'Hola' detectado de {from_email}")
                                 if send_auto_reply(from_email):
@@ -194,7 +202,7 @@ def index():
         'auto_replies_sent': status['responded_messages'],
         'last_error': status['last_error'],
         'service': 'Email Auto-Responder',
-        'version': '1.1'
+        'version': '1.2'
     })
 
 @app.route('/start')
