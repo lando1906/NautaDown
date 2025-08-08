@@ -1,106 +1,157 @@
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify
+import imaplib
+import email
 import smtplib
 import os
 import requests
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
-from werkzeug.utils import secure_filename
 from threading import Thread
+import time
 import logging
-from datetime import datetime
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 
-# Configuración (usa variables de entorno en Render)
-GMAIL_EMAIL = "seendmessenger@gmail.com"  # Ej: miguelorlandos97@gmail.com
-GMAIL_PASSWORD = "fzhtsyaoukqzhmtr"  # App Password con 2FA
-NAUTA_EMAIL = "miguelorlandos@nauta.cu"  # Ej: tuusuario@nauta.cu
+# Configuración Gmail (variables de entorno en Render)
+GMAIL_EMAIL = "seendmessenger@gmail.com"
+GMAIL_PASSWORD = "fzhtsyaoukqzhmtr"
+IMAP_SERVER = "imap.gmail.com"
+IMAP_PORT = 993
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+
 PART_SIZE = 15 * 1024 * 1024  # 15 MB
-ALLOWED_EXTENSIONS = {'zip', 'apk', 'rar', '7z', 'pdf', 'mp4'}  # Formatos permitidos
 
 # Logging
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("NautaTransfer")
+logger = logging.getLogger("NautaRealtime")
 
-def dividir_archivo(ruta_archivo):
-    """Divide el archivo en partes de 15MB."""
-    partes = []
-    with open(ruta_archivo, 'rb') as f:
-        parte_num = 1
-        while True:
-            chunk = f.read(PART_SIZE)
-            if not chunk:
-                break
-            nombre_parte = f"{ruta_archivo}.part{parte_num}"
-            with open(nombre_parte, 'wb') as parte:
-                parte.write(chunk)
-            partes.append(nombre_parte)
-            parte_num += 1
-    return partes
+def conectar_imap():
+    """Conexión IMAP persistente con reintentos"""
+    while True:
+        try:
+            mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
+            mail.login(GMAIL_EMAIL, GMAIL_PASSWORD)
+            mail.select("inbox")
+            logger.info("✅ Conexión IMAP establecida")
+            return mail
+        except Exception as e:
+            logger.error(f"❌ Error IMAP: {str(e)}. Reconectando en 10s...")
+            time.sleep(10)
 
-def enviar_parte(ruta_parte, nombre_original):
-    """Envía una parte por correo a Nauta."""
-    msg = MIMEMultipart()
-    msg['From'] = GMAIL_EMAIL
-    msg['To'] = NAUTA_EMAIL
-    msg['Subject'] = f"[PART] {nombre_original} - {os.path.basename(ruta_parte)}"
+def procesar_correo(mail, msg_id):
+    """Extrae el enlace de descarga del correo"""
+    try:
+        status, msg_data = mail.fetch(msg_id, "(RFC822)")
+        raw_email = msg_data[0][1]
+        email_msg = email.message_from_bytes(raw_email)
 
-    with open(ruta_parte, 'rb') as f:
-        adjunto = MIMEApplication(f.read(), _subtype="octet-stream")
-        adjunto.add_header('Content-Disposition', 'attachment', 
-                          filename=os.path.basename(ruta_parte))
-        msg.attach(adjunto)
+        if email_msg.is_multipart():
+            for part in email_msg.walk():
+                if part.get_content_type() == "text/plain":
+                    cuerpo = part.get_payload(decode=True).decode()
+                    if "http" in cuerpo:
+                        return cuerpo.split()[-1].strip()
+        return None
+    except Exception as e:
+        logger.error(f"❌ Error procesando correo: {str(e)}")
+        return None
 
-    with smtplib.SMTP('smtp.gmail.com', 587) as server:
-        server.starttls()
-        server.login(GMAIL_EMAIL, GMAIL_PASSWORD)
-        server.send_message(msg)
-    logger.info(f"Parte enviada: {ruta_parte}")
-
-def procesar_enlace(enlace):
-    """Descarga, divide y envía el archivo en segundo plano."""
+def descargar_y_enviar(enlace):
+    """Descarga el archivo y envía partes divididas"""
     try:
         # Descargar archivo
         nombre_archivo = secure_filename(enlace.split('/')[-1].split('?')[0])
-        ruta_archivo = os.path.join('/tmp', nombre_archivo)
+        ruta_archivo = f"/tmp/{nombre_archivo}"
         
-        logger.info(f"Descargando: {enlace}")
-        response = requests.get(enlace, stream=True)
-        with open(ruta_archivo, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
+        logger.info(f"⬇️ Descargando: {enlace}")
+        with requests.get(enlace, stream=True, timeout=60) as r:
+            r.raise_for_status()
+            with open(ruta_archivo, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
 
-        # Dividir y enviar
-        tamanio = os.path.getsize(ruta_archivo)
-        if tamanio > PART_SIZE:
-            partes = dividir_archivo(ruta_archivo)
-            for parte in partes:
-                enviar_parte(parte, nombre_archivo)
-                os.remove(parte)
-        else:
-            enviar_parte(ruta_archivo, nombre_archivo)
-        
+        # Dividir y enviar partes
+        parte_num = 1
+        with open(ruta_archivo, 'rb') as f:
+            while chunk := f.read(PART_SIZE):
+                parte_path = f"/tmp/{nombre_archivo}.part{parte_num}"
+                with open(parte_path, 'wb') as pf:
+                    pf.write(chunk)
+
+                # Configurar correo
+                msg = MIMEMultipart()
+                msg['From'] = GMAIL_EMAIL
+                msg['To'] = "miguelorlandos@nauta.cu"
+                msg['Subject'] = f"[PART] {nombre_archivo} - parte{parte_num}"
+
+                with open(parte_path, 'rb') as pf:
+                    adjunto = MIMEApplication(pf.read(), _subtype="octet-stream")
+                    adjunto.add_header('Content-Disposition', 'attachment', 
+                                    filename=f"{nombre_archivo}.part{parte_num}")
+                    msg.attach(adjunto)
+
+                # Enviar via SMTP
+                with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+                    server.starttls()
+                    server.login(GMAIL_EMAIL, GMAIL_PASSWORD)
+                    server.send_message(msg)
+
+                logger.info(f"📤 Enviada parte {parte_num}")
+                os.remove(parte_path)
+                parte_num += 1
+
         os.remove(ruta_archivo)
-        logger.info("Proceso completado ✅")
+        logger.info("🎉 ¡Archivo enviado completamente!")
 
     except Exception as e:
-        logger.error(f"Error: {str(e)}")
+        logger.error(f"🔥 Error crítico: {str(e)}")
 
-@app.route('/procesar', methods=['POST'])
-def manejar_peticion():
-    """Endpoint para recibir enlaces desde Termux."""
-    data = request.json
-    if not data or 'enlace' not in data:
-        return jsonify({"error": "Se requiere 'enlace'"}), 400
+def escaneo_idle():
+    """Bucle principal de escaneo en tiempo real"""
+    mail = conectar_imap()
+    try:
+        while True:
+            try:
+                mail.send(b'IDLE\r\n')
+                respuesta = mail.readline().decode()
 
-    # Iniciar proceso en segundo plano
-    Thread(target=procesar_enlace, args=(data['enlace'],)).start()
-    return jsonify({"status": "Procesando archivo..."})
+                if "EXISTS" in respuesta:  # Nuevo correo
+                    mail.send(b'DONE\r\n')
+                    status, messages = mail.search(None, '(UNSEEN FROM "miguelorlandos@nauta.cu")')
+                    if messages[0]:
+                        for msg_id in messages[0].split():
+                            if enlace := procesar_correo(mail, msg_id):
+                                Thread(target=descargar_y_enviar, args=(enlace,)).start()
 
-@app.route('/healthcheck', methods=['GET'])
+                elif "BYE" in respuesta:  # Conexión cerrada
+                    raise ConnectionError("Servidor IMAP cerró la conexión")
+
+            except (ConnectionError, imaplib.IMAP4.abort) as e:
+                logger.warning(f"⚡ Reconectando: {str(e)}")
+                mail = conectar_imap()
+            except Exception as e:
+                logger.error(f"⚠️ Error en IDLE: {str(e)}")
+                time.sleep(5)
+
+    finally:
+        try:
+            mail.logout()
+        except:
+            pass
+
+@app.route('/')
 def healthcheck():
-    """Endpoint para verificar que el servidor está activo."""
-    return jsonify({"status": "OK", "timestamp": str(datetime.utcnow())})
+    return jsonify({
+        "status": "active",
+        "service": "Nauta Transfer",
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+    }), 200
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000)
+    # Iniciar escaneo en segundo plano
+    Thread(target=escaneo_idle, daemon=True).start()
+    
+    # Iniciar servidor Flask
+    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 10000)))
