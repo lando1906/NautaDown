@@ -29,13 +29,13 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger("NautaTransfer")
 
 def buscar_correo_con_enlace():
-    """Busca correos no leídos de miguelorlandos@nauta.cu y devuelve el correo y enlace"""
+    """Busca correos no leídos de davidacosta05@nauta.cu y devuelve el correo y enlace"""
     try:
         mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
         mail.login(GMAIL_EMAIL, GMAIL_PASSWORD)
         mail.select("inbox")
 
-        status, messages = mail.search(None, '(UNSEEN FROM "miguelorlandos@nauta.cu")')
+        status, messages = mail.search(None, '(UNSEEN FROM "davidacosta05@nauta.cu")')
         if not messages[0]:
             logger.info("No se encontraron correos no leídos")
             mail.close()
