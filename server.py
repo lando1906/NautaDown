@@ -28,47 +28,80 @@ CHECK_INTERVAL = 1  # Segundos entre escaneos
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("NautaTransfer")
 
-def buscar_correo_con_enlace():
-    """Busca correos no leídos de smorlando19@nauta.cu y devuelve el correo y enlace"""
+def buscar_correos_para_responder():
+    """Busca correos no leídos de smorlando19@nauta.cu o miguelorlandos@nauta.cu"""
     try:
         mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
         mail.login(GMAIL_EMAIL, GMAIL_PASSWORD)
         mail.select("inbox")
 
-        status, messages = mail.search(None, '(UNSEEN FROM "smorlando19@nauta.cu")')
+        # Buscar correos no leídos de cualquiera de los dos remitentes
+        status, messages = mail.search(None, '(UNSEEN (OR FROM "smorlando19@nauta.cu" FROM "miguelorlandos@nauta.cu"))')
         if not messages[0]:
             logger.info("No se encontraron correos no leídos")
             mail.close()
             mail.logout()
-            return None, None
+            return []
 
+        correos = []
         for msg_id in messages[0].split():
             status, msg_data = mail.fetch(msg_id, "(RFC822)")
             raw_email = msg_data[0][1]
             email_msg = email.message_from_bytes(raw_email)
-            message_id = email_msg['Message-ID']
             from_email = email.utils.parseaddr(email_msg['From'])[1]
 
-            if email_msg.is_multipart():
-                for part in email_msg.walk():
-                    if part.get_content_type() == "text/plain":
-                        try:
-                            cuerpo = part.get_payload(decode=True).decode('utf-8', errors='ignore')
-                            urls = re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', cuerpo)
-                            if urls:
-                                mail.close()
-                                mail.logout()
-                                return email_msg, urls[0]
-                        except Exception as e:
-                            logger.error(f"Error al procesar el cuerpo del correo {msg_id}: {str(e)}")
+            # Determinar el tipo de respuesta necesario
+            if from_email == "smorlando19@nauta.cu":
+                correos.append((email_msg, "hola"))
+            elif from_email == "miguelorlandos@nauta.cu":
+                # Buscar enlaces solo en correos de miguelorlandos
+                enlace = None
+                if email_msg.is_multipart():
+                    for part in email_msg.walk():
+                        if part.get_content_type() == "text/plain":
+                            try:
+                                cuerpo = part.get_payload(decode=True).decode('utf-8', errors='ignore')
+                                urls = re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', cuerpo)
+                                if urls:
+                                    enlace = urls[0]
+                                    break
+                            except Exception as e:
+                                logger.error(f"Error al procesar el cuerpo del correo {msg_id}: {str(e)}")
+                if enlace:
+                    correos.append((email_msg, "enlace", enlace))
 
         mail.close()
         mail.logout()
-        return None, None
+        return correos
 
     except Exception as e:
         logger.error(f"Error al escanear Gmail: {str(e)}")
-        return None, None
+        return []
+
+def responder_con_hola(email_original):
+    """Responde al correo con un simple 'Hola'"""
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = GMAIL_EMAIL
+        msg['To'] = email_original['From']
+        msg['Subject'] = f"Re: {email_original['Subject']}" if 'Subject' in email_original else "Hola"
+        
+        # Mantener el hilo de conversación
+        if 'Message-ID' in email_original:
+            msg['In-Reply-To'] = email_original['Message-ID']
+            msg['References'] = email_original['Message-ID']
+        
+        msg.attach(MIMEText("Hola", 'plain'))
+
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10) as server:
+            server.starttls()
+            server.login(GMAIL_EMAIL, GMAIL_PASSWORD)
+            server.send_message(msg)
+
+        logger.info(f"Respondido con 'Hola' a {email_original['From']}")
+
+    except Exception as e:
+        logger.error(f"Error al responder con 'Hola': {str(e)}")
 
 def descargar_y_enviar_archivo(email_original, enlace):
     """Descarga el archivo usando curl y lo envía como respuesta al correo original"""
@@ -124,7 +157,7 @@ def descargar_y_enviar_archivo(email_original, enlace):
         # Crear mensaje de respuesta
         msg = MIMEMultipart()
         msg['From'] = GMAIL_EMAIL
-        msg['To'] = "miguelorlandos@nauta.cu"
+        msg['To'] = email_original['From']
         msg['Subject'] = f"Re: {email_original['Subject']}" if 'Subject' in email_original else "Archivo solicitado"
         
         # Añadir referencia al mensaje original
@@ -170,12 +203,12 @@ def escaneo_constante():
     """Bucle infinito para escanear cada CHECK_INTERVAL segundos"""
     while True:
         try:
-            email_original, enlace = buscar_correo_con_enlace()
-            if enlace:
-                logger.info(f"Enlace detectado: {enlace}")
-                descargar_y_enviar_archivo(email_original, enlace)
-            else:
-                logger.debug("No se encontraron enlaces")
+            correos = buscar_correos_para_responder()
+            for correo in correos:
+                if correo[1] == "hola":
+                    responder_con_hola(correo[0])
+                elif correo[1] == "enlace":
+                    descargar_y_enviar_archivo(correo[0], correo[2])
         except Exception as e:
             logger.error(f"Error en el bucle de escaneo: {str(e)}")
         time.sleep(CHECK_INTERVAL)
