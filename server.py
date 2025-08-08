@@ -22,7 +22,7 @@ IMAP_PORT = 993
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
 PART_SIZE = 15 * 1024 * 1024  # 15 MB por parte
-CHECK_INTERVAL = 10  # Segundos entre escaneos
+CHECK_INTERVAL = 1  # Segundos entre escaneos
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("NautaTransfer")
