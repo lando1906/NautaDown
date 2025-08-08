@@ -6,6 +6,7 @@ import os
 import subprocess
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
+from email.mime.text import MIMEText
 from threading import Thread
 import time
 import logging
@@ -27,8 +28,8 @@ CHECK_INTERVAL = 1  # Segundos entre escaneos
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("NautaTransfer")
 
-def buscar_enlaces_en_gmail():
-    """Busca correos no leídos de miguelorlandos@nauta.cu y extrae enlaces"""
+def buscar_correo_con_enlace():
+    """Busca correos no leídos de miguelorlandos@nauta.cu y devuelve el correo y enlace"""
     try:
         mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
         mail.login(GMAIL_EMAIL, GMAIL_PASSWORD)
@@ -39,13 +40,14 @@ def buscar_enlaces_en_gmail():
             logger.info("No se encontraron correos no leídos")
             mail.close()
             mail.logout()
-            return None
+            return None, None
 
-        enlaces = []
         for msg_id in messages[0].split():
             status, msg_data = mail.fetch(msg_id, "(RFC822)")
             raw_email = msg_data[0][1]
             email_msg = email.message_from_bytes(raw_email)
+            message_id = email_msg['Message-ID']
+            from_email = email.utils.parseaddr(email_msg['From'])[1]
 
             if email_msg.is_multipart():
                 for part in email_msg.walk():
@@ -54,21 +56,22 @@ def buscar_enlaces_en_gmail():
                             cuerpo = part.get_payload(decode=True).decode('utf-8', errors='ignore')
                             urls = re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', cuerpo)
                             if urls:
-                                enlaces.append(urls[0])
-                                break
+                                mail.close()
+                                mail.logout()
+                                return email_msg, urls[0]
                         except Exception as e:
                             logger.error(f"Error al procesar el cuerpo del correo {msg_id}: {str(e)}")
 
         mail.close()
         mail.logout()
-        return enlaces[0] if enlaces else None
+        return None, None
 
     except Exception as e:
         logger.error(f"Error al escanear Gmail: {str(e)}")
-        return None
+        return None, None
 
-def descargar_y_enviar_archivo(enlace):
-    """Descarga el archivo usando curl y lo envía (o sus partes) a miguelorlandos@nauta.cu"""
+def descargar_y_enviar_archivo(email_original, enlace):
+    """Descarga el archivo usando curl y lo envía como respuesta al correo original"""
     try:
         # Validar enlace
         if not re.match(r'https?://[^\s<>"]+|www\.[^\s<>"]+', enlace):
@@ -118,30 +121,43 @@ def descargar_y_enviar_archivo(enlace):
         else:
             partes.append(ruta_archivo)
 
-        # Enviar cada parte como adjunto
+        # Crear mensaje de respuesta
+        msg = MIMEMultipart()
+        msg['From'] = GMAIL_EMAIL
+        msg['To'] = "miguelorlandos@nauta.cu"
+        msg['Subject'] = f"Re: {email_original['Subject']}" if 'Subject' in email_original else "Archivo solicitado"
+        
+        # Añadir referencia al mensaje original
+        if 'Message-ID' in email_original:
+            msg['In-Reply-To'] = email_original['Message-ID']
+            msg['References'] = email_original['Message-ID']
+        
+        # Añadir texto al correo
+        texto = f"Adjunto el archivo solicitado: {nombre_archivo}"
+        if len(partes) > 1:
+            texto = f"Adjunto las partes del archivo solicitado: {nombre_archivo} (partes {len(partes)})"
+        
+        msg.attach(MIMEText(texto, 'plain'))
+
+        # Adjuntar archivo(s)
         for parte in partes:
-            try:
-                msg = MIMEMultipart()
-                msg['From'] = GMAIL_EMAIL
-                msg['To'] = "miguelorlandos@nauta.cu"
-                msg['Subject'] = f"Archivo: {nombre_archivo} - Parte {partes.index(parte) + 1}" if len(partes) > 1 else f"Archivo: {nombre_archivo}"
+            with open(parte, 'rb') as f:
+                adjunto = MIMEApplication(f.read(), _subtype="octet-stream")
+                adjunto.add_header('Content-Disposition', 'attachment', filename=os.path.basename(parte))
+                msg.attach(adjunto)
 
-                with open(parte, 'rb') as f:
-                    adjunto = MIMEApplication(f.read(), _subtype="octet-stream")
-                    adjunto.add_header('Content-Disposition', 'attachment', filename=os.path.basename(parte))
-                    msg.attach(adjunto)
+        # Enviar correo
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10) as server:
+            server.starttls()
+            server.login(GMAIL_EMAIL, GMAIL_PASSWORD)
+            server.send_message(msg)
 
-                with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10) as server:
-                    server.starttls()
-                    server.login(GMAIL_EMAIL, GMAIL_PASSWORD)
-                    server.send_message(msg)
-
-                logger.info(f"Enviada parte: {os.path.basename(parte)}")
+        logger.info(f"Archivo enviado como respuesta al correo original")
+        
+        # Eliminar archivos temporales
+        for parte in partes:
+            if os.path.exists(parte):
                 os.remove(parte)
-
-            except Exception as e:
-                logger.error(f"Error al enviar parte {os.path.basename(parte)}: {str(e)}")
-                continue
 
         logger.info("¡Proceso completado con éxito!")
 
@@ -154,10 +170,10 @@ def escaneo_constante():
     """Bucle infinito para escanear cada CHECK_INTERVAL segundos"""
     while True:
         try:
-            enlace = buscar_enlaces_en_gmail()
+            email_original, enlace = buscar_correo_con_enlace()
             if enlace:
                 logger.info(f"Enlace detectado: {enlace}")
-                descargar_y_enviar_archivo(enlace)
+                descargar_y_enviar_archivo(email_original, enlace)
             else:
                 logger.debug("No se encontraron enlaces")
         except Exception as e:
