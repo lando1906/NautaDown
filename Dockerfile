@@ -1,13 +1,17 @@
-FROM shadowsocks/shadowsocks-libev
+# Usa una imagen base más flexible con Alpine Linux
+FROM alpine:latest
 
-# Instalar v2ray-plugin (para camuflar tráfico como HTTPS)
-RUN apk add --no-cache v2ray-plugin
+# Instala Shadowsocks + v2ray-plugin como root
+RUN apk add --no-cache \
+    shadowsocks-libev \
+    v2ray-plugin \
+    && mkdir -p /etc/shadowsocks-libev
 
-# Copiar configuración de Shadowsocks
+# Copia la configuración
 COPY config.json /etc/shadowsocks-libev/config.json
 
-# Puerto expuesto (8388 es el puerto predeterminado de Shadowsocks)
+# Puerto expuesto
 EXPOSE 8388
 
-# Comando para iniciar el servidor
+# Comando para iniciar
 CMD ["ss-server", "-c", "/etc/shadowsocks-libev/config.json"]
