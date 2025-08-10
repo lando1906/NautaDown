@@ -4,5 +4,5 @@
     "password": "jsh5$*ey",
     "method": "aes-256-gcm",
     "plugin": "v2ray-plugin",
-    "plugin_opts": "server;path=/ws-news;host=miprueba.onrender.com"
+    "plugin_opts": "server;path=/ws-news;host=miprueba-f8kd.onrender.com"
 }
