@@ -1,8 +1,15 @@
-{
-    "server": "0.0.0.0",
-    "server_port": 8388,
-    "password": "jsh5$*ey",
-    "method": "aes-256-gcm",
-    "plugin": "v2ray-plugin",
-    "plugin_opts": "server;path=/ws-news;host=miprueba-f8kd.onrender.com"
+logoutput: /dev/stdout
+internal: 0.0.0.0 port = 1080
+external: eth0
+socksmethod: username
+user.privileged: root
+user.notprivileged: nobody
+client socks pass {
+    from: 0.0.0.0/0 to: 0.0.0.0/0
+    log: connect disconnect error
+}
+socks pass {
+    from: 0.0.0.0/0 to: 0.0.0.0/0
+    command: bind connect udpassociate
+    log: connect disconnect error
 }
