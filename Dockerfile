@@ -1,10 +1,11 @@
 FROM alpine:latest
 
-# Instala Dante (SOCKS5) y OpenSSH (para compresión -C)
-RUN apk add --no-cache dante-server openssh
+RUN apk add --no-cache dante-server openssh \
+    && ssh-keygen -A \  # Genera claves de host para SSH
+    && echo "root:password123" | chpasswd  # Establece contraseña para root
 
-# Configura Dante (proxy SOCKS5)
 COPY sockd.conf /etc/sockd.conf
 
-# Inicia SOCKS5 + SSH con compresión
+EXPOSE 1080 22
+
 CMD ["sh", "-c", "sockd -f /etc/sockd.conf & /usr/sbin/sshd -D -o 'Compression yes'"]
