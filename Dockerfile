@@ -1,11 +1,11 @@
 FROM alpine:latest
 
-RUN apk add --no-cache dante-server openssh && \
-    ssh-keygen -A && \
-    echo "root:password123" | chpasswd
+RUN apk add --no-cache dante-server
+
+# Configura para usar el puerto de Render o 1080
+ENV SOCKS_PORT=${PORT:-1080}
 
 COPY sockd.conf /etc/sockd.conf
+RUN sed -i "s/port = 1080/port = $SOCKS_PORT/g" /etc/sockd.conf
 
-EXPOSE 1080 22
-
-CMD ["sh", "-c", "sockd -f /etc/sockd.conf & /usr/sbin/sshd -D -o 'Compression yes'"]
+CMD ["sockd", "-f", "/etc/sockd.conf", "-N", "1"]
