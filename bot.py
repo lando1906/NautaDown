@@ -4,7 +4,7 @@ from telegram import Update, InputFile
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 
 # 🔐 Token desde variable de entorno
-TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = "7011073342:AAFvvoKngrMkFWGXQLgmtKRTcZrc48suP20"
 
 # 📤 Subir archivo a Uguu
 def upload_to_uguu(file_path):
