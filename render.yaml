@@ -3,4 +3,13 @@ services:
     name: qr-verificacion-bot
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python bot.py
+    startCommand: |
+      pip install deltabot-cli &&
+      deltabot-cli init db_account &&
+      deltabot-cli config db_account --addr ${BOT_EMAIL} --pass ${BOT_PASS} &&
+      python bot.py
+    envVars:
+      - key: BOT_EMAIL
+        value: ywoy8wpe3@nine.testrun.org
+      - key: BOT_PASS
+        value: mO*061119
