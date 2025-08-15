@@ -1,6 +1,6 @@
 flask
 requests
 python-dotenv
-deltachat-cli
+deltabot-cli
 yt-dlp
 qrcode
