@@ -1,0 +1,5 @@
+services:
+  - type: web
+    name: deltachat-bot
+    env: docker
+    plan: free
