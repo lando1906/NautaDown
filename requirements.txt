@@ -5,3 +5,4 @@ deltabot-cli
 yt-dlp
 qrcode
 python-telegram-bot
+asyncio
