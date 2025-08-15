@@ -1,24 +1,29 @@
-from flask import Flask, render_template
-import qrcode
-import os
+from flask import Flask, send_file, render_template
 from deltabot import Bot
+import os
 
+# Inicializa el bot con la base de datos
+bot = Bot("db_account")
+
+# Define la función que responde a todos los mensajes
+@bot.message()
+def responder(ctx):
+    ctx.reply("En desarrollo 🛠️")
+
+# Inicia el bot
+bot.start()
+
+# Crea la app Flask
 app = Flask(__name__)
-
-# Inicializa el bot usando deltabot-cli
-bot = Bot("db_account")  # Asegúrate de que esta carpeta exista y tenga la cuenta configurada
-
-def generar_qr():
-    accid = bot.get_default_account_id()
-    uri = bot.rpc.get_qr(accid)  # URI de verificación del cifrado
-    img = qrcode.make(uri)
-    img.save("static/qr.png")
-    return uri
 
 @app.route("/")
 def index():
-    uri = generar_qr()
-    return render_template("index.html", uri=uri)
+    return render_template("index.html")
+
+@app.route("/qr")
+def qr():
+    return send_file("static/qr.png", mimetype="image/png")
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
