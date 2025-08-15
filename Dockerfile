@@ -1,10 +1,23 @@
-FROM alpine:latest
+FROM python:3.11-slim
 
-RUN apk add --no-cache dante-server
+RUN apt-get update && apt-get install -y \
+    libolm-dev \
+    libsqlite3-dev \
+    libssl-dev \
+    libffi-dev \
+    build-essential \
+    ffmpeg \
+    qrencode \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY sockd.conf /etc/sockd.conf
+WORKDIR /app
 
-# Render usa $PORT para web services, pero para SOCKS necesitamos puerto fijo
-EXPOSE 1080
+COPY . .
 
-CMD ["sockd", "-f", "/etc/sockd.conf", "-N", "1", "-p", "1080"]
+RUN pip install --no-cache-dir -r requirements.txt
+
+RUN mkdir -p /app/downloads /app/static
+
+EXPOSE 10000
+
+CMD ["python", "app.py"]
