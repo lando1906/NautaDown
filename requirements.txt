@@ -4,3 +4,4 @@ python-dotenv
 deltabot-cli
 yt-dlp
 qrcode
+python-telegram-bot
