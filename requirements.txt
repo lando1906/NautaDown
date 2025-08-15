@@ -1,3 +1,6 @@
 flask
 requests
 python-dotenv
+deltachat-cli
+yt-dlp
+qrcode
