@@ -1,28 +1,24 @@
-from flask import Flask
-from deltachat2 import MsgData, events
-from deltabot_cli import BotCli
+from flask import Flask, render_template
+import qrcode
+import os
+from deltabot import Bot
 
-# 🔐 Credenciales embebidas
-EMAIL = "tubot@ejemplo.com"
-PASSWORD = "tu_contraseña_segura"
-
-# 🤖 Inicializar CLI del bot
-cli = BotCli("echobot", addr=EMAIL, pass_=PASSWORD)
-
-@cli.on(events.NewMessage)
-def echo(bot, accid, event):
-    msg = event.msg
-    print(f"📨 Recibido: {msg.text}")
-    bot.rpc.send_msg(accid, msg.chat_id, MsgData(text=f"Eco: {msg.text}"))
-
-# 🌐 Servidor web mínimo para Render
 app = Flask(__name__)
+
+# Inicializa el bot usando deltabot-cli
+bot = Bot("db_account")  # Asegúrate de que esta carpeta exista y tenga la cuenta configurada
+
+def generar_qr():
+    accid = bot.get_default_account_id()
+    uri = bot.rpc.get_qr(accid)  # URI de verificación del cifrado
+    img = qrcode.make(uri)
+    img.save("static/qr.png")
+    return uri
 
 @app.route("/")
 def index():
-    return "🤖 DeltaBot con deltabot-cli está corriendo en Render."
+    uri = generar_qr()
+    return render_template("index.html", uri=uri)
 
 if __name__ == "__main__":
-    import threading
-    threading.Thread(target=cli.start).start()
-    app.run(host="0.0.0.0", port=10000)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
