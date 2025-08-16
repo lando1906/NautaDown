@@ -2,193 +2,167 @@ import os
 import time
 import logging
 import asyncio
-import aria2p
 from urllib.parse import urlparse
 from telegram import Update, Bot
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 from telegram.error import TelegramError
 
 # 🔧 Configuración
-TOKEN = "7011073342:AAFvvoKngrMkFWGXQLgmtKRTcZrc48suP20"  # Token público (cambiar en producción)
+TOKEN = "7011073342:AAFvvoKngrMkFWGXQLgmtKRTcZrc48suP20"
 UPLOAD_FOLDER = "files"
-MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB (límite de Telegram para bots)
+SERVER_URL = "https://nautadown-1.onrender.com"  # Cambiar por tu URL real
+PORT = 10000
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# 📝 Logger mejorado
+# 📝 Logger
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO,
-    filename="bot_activity.log"
+    handlers=[
+        logging.FileHandler("bot_activity.log"),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger(__name__)
 
-# ⚙️ Inicialización de Aria2p
-try:
-    aria2 = aria2p.API(
-        aria2p.Client(host="http://localhost", port=6800, secret="")
-    )
-except Exception as e:
-    logger.critical(f"Error al conectar con Aria2: {str(e)}")
-    raise
+def get_download_link(filename):
+    """Genera enlace de descarga directa"""
+    return f"{SERVER_URL}/{UPLOAD_FOLDER}/{filename}"
 
-# 🔗 Validación de URLs
-def is_valid_url(url):
-    try:
-        result = urlparse(url)
-        return all([result.scheme, result.netloc])
-    except:
-        return False
-
-# 📡 Descarga con progreso mejorado
-async def download_url_with_progress(url, update):
-    try:
-        if not is_valid_url(url):
-            await update.message.reply_text("❌ Enlace no válido.")
-            return None
-
-        filename = url.split("/")[-1].split("?")[0] or f"file_{int(time.time())}"
-        path = os.path.join(UPLOAD_FOLDER, filename)
-
-        # Opciones de descarga
-        options = {
-            "dir": UPLOAD_FOLDER,
-            "out": filename,
-            "max-file-not-found": 3,
-            "timeout": 30
-        }
-
-        download = aria2.add_uris([url], options=options)
-        msg = await update.message.reply_text("📡 Iniciando descarga...")
-        last_update = time.time()
-
-        while not download.is_complete:
-            if time.time() - last_update > 5:  # Actualizar cada 5 segundos
-                try:
-                    download.update()
-                    percent = int((download.completed_length or 0) * 100 / (download.total_length or 1))
-                    speed = int(download.download_speed or 1)
-                    eta = ((download.total_length or 0) - (download.completed_length or 0)) / (speed or 1)
-                    bar = "⬢" * (percent // 10) + "⬡" * (10 - percent // 10)
-
-                    text = (f"📡 Descargando:\n"
-                           f"[{bar}] {percent}%\n"
-                           f"⚡ {speed // 1024} KB/s\n"
-                           f"⏳ ETA: {int(eta)}s")
-                    await msg.edit_text(text)
-                    last_update = time.time()
-                except Exception as e:
-                    logger.error(f"Error al actualizar progreso: {str(e)}")
-
-            await asyncio.sleep(1)
-
-        await msg.edit_text("✅ Descarga completada!")
-        return filename
-
-    except Exception as e:
-        logger.error(f"Error en descarga: {str(e)}")
-        await update.message.reply_text("❌ Error al descargar el archivo.")
-        return None
-
-# 📤 Subida con progreso mejorado
-async def send_file_with_progress(bot: Bot, chat_id: int, path: str):
-    try:
-        if not os.path.exists(path):
-            await bot.send_message(chat_id, "⚠️ Archivo no encontrado.")
-            return
-
-        file_size = os.path.getsize(path)
-        if file_size > MAX_FILE_SIZE:
-            await bot.send_message(chat_id, f"❌ Archivo demasiado grande (límite: {MAX_FILE_SIZE//(1024*1024)}MB)")
-            return
-
-        msg = await bot.send_message(chat_id, "📤 Preparando para subir...")
-        start_time = time.time()
-        last_percent = -1
-
-        def progress(current, total):
-            nonlocal last_percent
-            percent = int((current * 100) / total)
-            if percent != last_percent and percent % 5 == 0:  # Actualizar cada 5%
-                last_percent = percent
-                elapsed = time.time() - start_time
-                speed = current / elapsed if elapsed > 0 else 0
-                eta = (total - current) / speed if speed > 0 else 0
-                bar = "⬢" * (percent // 10) + "⬡" * (10 - percent // 10)
-                
-                progress_text = (f"📤 Subiendo:\n"
-                                f"[{bar}] {percent}%\n"
-                                f"⚡ {speed//1024} KB/s\n"
-                                f"⏳ ETA: {int(eta)}s")
-                asyncio.create_task(msg.edit_text(progress_text))
-
-        with open(path, "rb") as file:
-            await bot.send_document(
-                chat_id=chat_id,
-                document=file,
-                filename=os.path.basename(path),
-                progress=progress
-            )
-
-        await msg.edit_text("✅ Archivo enviado con éxito!")
-        try:
-            os.remove(path)  # Limpieza después de enviar
-        except:
-            pass
-
-    except Exception as e:
-        logger.error(f"Error al subir archivo: {str(e)}")
-        await bot.send_message(chat_id, "⚠️ Error al subir el archivo.")
-
-# 📥 Manejador de documentos
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         doc = update.message.document
-        if doc.file_size > MAX_FILE_SIZE:
+        file_size = doc.file_size
+        
+        # Verificar tamaño
+        if file_size > MAX_FILE_SIZE:
             await update.message.reply_text(f"❌ Archivo demasiado grande (límite: {MAX_FILE_SIZE//(1024*1024)}MB)")
             return
 
-        file = await doc.get_file()
+        # Crear nombre único
         filename = f"{int(time.time())}_{doc.file_name}"
         path = os.path.join(UPLOAD_FOLDER, filename)
+        
+        # Mensaje inicial
+        msg = await update.message.reply_text("📤 Preparando para recibir archivo...")
+        start_time = time.time()
+        last_update = start_time
+        
+        # Función de progreso
+        def progress(current, total):
+            nonlocal last_update
+            now = time.time()
+            if now - last_update > 1:  # Actualizar cada 1 segundo
+                percent = int((current * 100) / total)
+                speed = current / (now - start_time)
+                eta = (total - current) / speed if speed > 0 else 0
+                
+                bar = "⬢" * (percent // 5) + "⬡" * (20 - percent // 5)
+                progress_text = (
+                    f"📤 Subiendo al servidor:\n"
+                    f"{bar}\n"
+                    f"📊 Progreso: {percent}%\n"
+                    f"⚡ Velocidad: {speed/1024:.1f} KB/s\n"
+                    f"⏳ Tiempo restante: {int(eta)}s"
+                )
+                asyncio.create_task(msg.edit_text(progress_text))
+                last_update = now
 
-        msg = await update.message.reply_text("📥 Recibiendo archivo...")
-        await file.download_to_drive(path)
-        await msg.edit_text("✅ Archivo guardado en servidor.")
-
-        await send_file_with_progress(context.bot, update.effective_chat.id, path)
+        # Descargar archivo con progreso
+        file = await doc.get_file()
+        await file.download_to_drive(custom_path=path, progress=progress)
+        
+        # Verificar que se subió correctamente
+        if os.path.exists(path):
+            download_link = get_download_link(filename)
+            file_info = os.stat(path)
+            await msg.edit_text(
+                f"✅ Archivo subido correctamente!\n\n"
+                f"📝 Nombre: {filename}\n"
+                f"📦 Tamaño: {file_info.st_size//1024} KB\n"
+                f"🔗 Enlace directo: {download_link}\n\n"
+                f"⚠️ El archivo se eliminará después de 24 horas"
+            )
+        else:
+            await msg.edit_text("❌ Error al guardar el archivo en el servidor")
 
     except TelegramError as e:
         logger.error(f"Error Telegram: {str(e)}")
-        await update.message.reply_text("❌ Error al recibir el archivo.")
+        await update.message.reply_text("❌ Error al recibir el archivo")
     except Exception as e:
         logger.error(f"Error inesperado: {str(e)}")
-        await update.message.reply_text("⚠️ Error al procesar el archivo.")
+        await update.message.reply_text("⚠️ Error al procesar el archivo")
 
-# 🔗 Manejador de enlaces
 async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text.strip()
-    if not is_valid_url(url):
-        await update.message.reply_text("❌ Por favor envía un enlace válido (http/https).")
+    if not url.startswith(("http://", "https://")):
+        await update.message.reply_text("❌ Enlace no válido. Debe comenzar con http:// o https://")
         return
 
-    logger.info(f"Iniciando descarga para {url}")
-    filename = await download_url_with_progress(url, update)
-    
-    if filename:
+    msg = await update.message.reply_text("⏳ Iniciando descarga desde el enlace...")
+    try:
+        filename = url.split("/")[-1].split("?")[0] or f"file_{int(time.time())}"
         path = os.path.join(UPLOAD_FOLDER, filename)
-        await send_file_with_progress(context.bot, update.effective_chat.id, path)
+        
+        # Configurar progreso
+        start_time = time.time()
+        last_percent = 0
+        
+        async with context.bot.get_file(update.message) as file:
+            with open(path, "wb") as f:
+                async for chunk in file.download_as_bytearray():
+                    f.write(chunk)
+                    
+                    # Actualizar progreso
+                    current_size = os.path.getsize(path)
+                    percent = int((current_size * 100) / (file.file_size or 1))
+                    
+                    if percent != last_percent and percent % 5 == 0:
+                        elapsed = time.time() - start_time
+                        speed = current_size / elapsed if elapsed > 0 else 0
+                        eta = (file.file_size - current_size) / speed if speed > 0 else 0
+                        
+                        bar = "⬢" * (percent // 5) + "⬡" * (20 - percent // 5)
+                        progress_text = (
+                            f"📥 Descargando desde URL:\n"
+                            f"{bar}\n"
+                            f"📊 Progreso: {percent}%\n"
+                            f"⚡ Velocidad: {speed/1024:.1f} KB/s\n"
+                            f"⏳ Tiempo restante: {int(eta)}s"
+                        )
+                        await msg.edit_text(progress_text)
+                        last_percent = percent
+        
+        if os.path.exists(path):
+            download_link = get_download_link(filename)
+            await msg.edit_text(
+                f"✅ Descarga completada!\n\n"
+                f"📝 Nombre: {filename}\n"
+                f"📦 Tamaño: {os.path.getsize(path)//1024} KB\n"
+                f"🔗 Enlace directo: {download_link}\n\n"
+                f"⚠️ El archivo se eliminará después de 24 horas"
+            )
+        else:
+            await msg.edit_text("❌ Error al guardar el archivo descargado")
 
-# 🚀 Inicio del bot
+    except Exception as e:
+        logger.error(f"Error al descargar desde URL: {str(e)}")
+        await msg.edit_text("❌ Error al procesar el enlace")
+
 if __name__ == "__main__":
     try:
         app = ApplicationBuilder().token(TOKEN).build()
         app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
         
-        logger.info("Bot iniciado correctamente")
-        print("Bot en ejecución... Presiona Ctrl+C para detener")
-        app.run_polling()
-        
+        logger.info(f"🚀 Iniciando bot en puerto {PORT}")
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            url_path=TOKEN,
+            webhook_url=f"{SERVER_URL}/{TOKEN}"
+        )
     except Exception as e:
         logger.critical(f"Error al iniciar bot: {str(e)}")
         raise
