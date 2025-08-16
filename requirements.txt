@@ -4,6 +4,6 @@ python-dotenv
 deltabot-cli
 yt-dlp
 qrcode
-python-telegram-bot[webhooks]
+python-telegram-bot
 asyncio
 aria2p
