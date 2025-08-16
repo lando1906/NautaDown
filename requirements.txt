@@ -10,3 +10,4 @@ asyncio
 aria2p
 werkzeug
 gunicorn
+psutil
