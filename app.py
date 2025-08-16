@@ -7,7 +7,7 @@ from tempfile import NamedTemporaryFile
 import subprocess
 
 # Configuración
-TOKEN = "7011073342:AAFvvoKngrMkFWGXQLgmtKRTcZrc48suP20"
+BOT_TOKEN = "7011073342:AAFvvoKngrMkFWGXQLgmtKRTcZrc48suP20"
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB (límite de Telegram)
 
 # Logs
