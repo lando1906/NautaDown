@@ -2,7 +2,7 @@ import os
 import secrets
 from flask import Flask, request, jsonify
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import CommandHandler, MessageHandler, filters, CallbackContext, Dispatcher
+from telegram.ext import CommandHandler, MessageHandler, filters, CallbackContext, dispatcher
 import threading
 import logging
 
