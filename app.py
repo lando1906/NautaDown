@@ -17,7 +17,7 @@ app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'storage'
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+TOKEN = "7011073342:AAFvvoKngrMkFWGXQLgmtKRTcZrc48suP20"
 
 # Base de datos simple
 file_db = {}
