@@ -1,23 +1,13 @@
-FROM python:3.11-slim
-
-RUN apt-get update && apt-get install -y \
-    libolm-dev \
-    libsqlite3-dev \
-    libssl-dev \
-    libffi-dev \
-    build-essential \
-    ffmpeg \
-    qrencode \
-    && rm -rf /var/lib/apt/lists/*
+FROM python:3.9-slim
 
 WORKDIR /app
 
-COPY . .
+# Instalar FFmpeg y dependencias
+RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
 
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-RUN mkdir -p /app/downloads /app/static
-
-EXPOSE 10000
+COPY . .
 
 CMD ["python", "app.py"]
