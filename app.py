@@ -41,7 +41,7 @@ def start(update: Update, context: CallbackContext):
     update.message.reply_text(
         welcome_msg,
         parse_mode='Markdown',
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=InlineKeyboardMarkup(keyboard))
     
 def example(update: Update, context: CallbackContext):
     update.callback_query.answer()
