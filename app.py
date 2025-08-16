@@ -11,7 +11,7 @@ app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'storage'
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')  # Configurar en Render
+TOKEN = "7011073342:AAFvvoKngrMkFWGXQLgmtKRTcZrc48suP20"
 bot = Bot(token=TOKEN)
 
 # Base de datos simple (para producción usa SQLite/PostgreSQL)
