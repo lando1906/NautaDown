@@ -1,105 +1,149 @@
 import os
-import secrets
-from flask import Flask, request, jsonify, send_from_directory
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    filters,
-    ContextTypes,
-    CallbackQueryHandler
-)
 import logging
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.constants import ParseMode
+from tempfile import NamedTemporaryFile
+import subprocess
 
-# Configuración Flask
-app = Flask(__name__)
-app.config['UPLOAD_FOLDER'] = 'storage'
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+# Configuración
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB (límite de Telegram)
 
-TOKEN = "7011073342:AAFvvoKngrMkFWGXQLgmtKRTcZrc48suP20"
+# Logs
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Base de datos simple
-file_db = {}
+# Mensajes elegantes (Markdown V2)
+WELCOME_MSG = """
+✨ *¡Bienvenido al Compresor de Videos de Alta Calidad\!* ✨
 
-def generate_id():
-    return secrets.token_urlsafe(18)[:24]
+📤 Envíame un video y lo optimizaré con *mínima pérdida de calidad* usando `FFmpeg` y el códec *H\.265* \(HEVC\)\.
+🔹 *Tamaño máximo:* 50MB
+🔹 *Formato recomendado:* MP4, MOV, MKV
 
-# Handlers de Telegram (async ahora)
+🛠️ *Comandos:*
+/start \- Muestra este mensaje
+/help \- Ayuda y ejemplos
+"""
+
+COMPRESSING_MSG = """
+🔄 *Procesando tu video\.\.\.*  
+🔧 *Configuración aplicada:*
+▫️ Códec: `libx265` \(HEVC\)
+▫️ Calidad: `CRF 20` \(óptima\)
+▫️ Audio: `Copiado sin pérdida`  
+⏳ _Esto puede tardar unos segundos\.\.\._
+"""
+
+SUCCESS_MSG = """
+✅ *¡Video comprimido con éxito\!*  
+
+📊 *Detalles del proceso:*
+▫️ Tamaño reducido con *mínima pérdida de calidad*\.
+▫️ Formato: `MP4` \(H\.265 \+ AAC\)
+▫️ Preset: `medium` \(equilibrio velocidad/compresión\)
+
+👇 *Descarga el resultado aquí abajo\.*
+"""
+
+ERROR_MSG = """
+❌ *¡Error al procesar el video\!*  
+
+🔍 *Posibles causas:*
+▫️ El archivo no es un video válido\.
+▫️ Supera el límite de 50MB\.
+▫️ El códec no es compatible\.
+
+💡 *Solución:* Intenta con otro formato \(ej\. MP4\)\.
+"""
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    welcome_msg = """
-    🚀 *Bienvenido a MiCloud Bot* 🚀
-
-    Envíame cualquier archivo y te daré un enlace de descarga directa:
-    `https://micloud.com/<ID-24-caracteres>`
-    """
-    keyboard = [
-        [InlineKeyboardButton("🌐 Sitio Web", url="https://micloud.onrender.com")],
-        [InlineKeyboardButton("📌 Ejemplo", callback_data='example')]
-    ]
     await update.message.reply_text(
-        welcome_msg,
-        parse_mode='Markdown',
-        reply_markup=InlineKeyboardMarkup(keyboard))
+        WELCOME_MSG,
+        parse_mode=ParseMode.MARKDOWN_V2
+    )
 
-async def example(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    await update.callback_query.message.reply_text(
-        "Ejemplo de enlace: https://micloud.com/aBcD1234eFgH5678iJkL9012")
-
-async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    document = update.message.document
-    file_id = generate_id()
-    file_name = document.file_name
-    
-    # Descargar archivo
-    file = await context.bot.get_file(document.file_id)
-    file_path = os.path.join(app.config['UPLOAD_FOLDER'], file_name)
-    await file.download_to_drive(file_path)
-    
-    # Registrar en DB
-    file_db[file_id] = file_name
-    
-    # Responder con enlace
-    await update.message.reply_text(
-        f"✅ *Archivo subido!*\n\n🔗 Enlace:\n`https://micloud.com/{file_id}`\n\n"
-        f"📁 Nombre: `{file_name}`",
-        parse_mode='Markdown')
-
-# Configuración del Bot
-application = Application.builder().token(TOKEN).build()
-
-# Registro de handlers
-application.add_handler(CommandHandler('start', start))
-application.add_handler(MessageHandler(filters.Document.ALL, handle_file))
-application.add_handler(CallbackQueryHandler(example, pattern='example'))
-
-# Webhook para Flask
-@app.route('/webhook', methods=['POST'])
-async def telegram_webhook():
-    json_data = await request.get_json()
-    update = Update.de_json(json_data, application.bot)
-    await application.process_update(update)
-    return jsonify({"status": "ok"})
-
-# Servidor de archivos
-@app.route('/<file_id>')
-def download_file(file_id):
-    if file_id in file_db:
-        return send_from_directory(
-            app.config['UPLOAD_FOLDER'],
-            file_db[file_id],
-            as_attachment=True)
-    return jsonify({"error": "File not found"}), 404
-
-if __name__ == '__main__':
-    if os.getenv('RENDER'):
-        # Configuración para Render
-        application.run_webhook(
-            listen='0.0.0.0',
-            port=int(os.getenv('PORT', 10000)),
-            webhook_url=f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/webhook"
+async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Verificar si es un video
+    if not update.message.video and not (update.message.document and update.message.document.mime_type.startswith("video/")):
+        await update.message.reply_text(
+            "⚠️ *Por favor, envía un video válido.*",
+            parse_mode=ParseMode.MARKDOWN_V2
         )
-    else:
-        # Modo desarrollo con polling
-        application.run_polling()
+        return
+
+    # Obtener archivo
+    file = await (update.message.video or update.message.document).get_file()
+    
+    # Validar tamaño
+    if file.file_size > MAX_FILE_SIZE:
+        await update.message.reply_text(
+            f"⚠️ *El video pesa {file.file_size // (1024 * 1024)}MB.* \n"
+            "*Límite:* 50MB\. Sube un archivo más pequeño\.",
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
+        return
+
+    # Mensaje de "procesando"
+    processing_msg = await update.message.reply_text(
+        COMPRESSING_MSG,
+        parse_mode=ParseMode.MARKDOWN_V2
+    )
+
+    # Descargar video
+    with NamedTemporaryFile(suffix=".mp4", delete=False) as temp_input:
+        await file.download_to_drive(temp_input.name)
+        temp_input_path = temp_input.name
+
+    # Comprimir con FFmpeg (H.265)
+    output_path = temp_input_path.replace(".mp4", "_compressed.mp4")
+    ffmpeg_cmd = [
+        "ffmpeg",
+        "-i", temp_input_path,
+        "-c:v", "libx265",
+        "-crf", "20",
+        "-preset", "medium",
+        "-c:a", "copy",
+        output_path
+    ]
+
+    try:
+        subprocess.run(ffmpeg_cmd, check=True)
+        # Enviar video comprimido
+        await update.message.reply_video(
+            video=open(output_path, "rb"),
+            caption=SUCCESS_MSG,
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
+    except subprocess.CalledProcessError as e:
+        logger.error(f"FFmpeg error: {e}")
+        await update.message.reply_text(
+            ERROR_MSG,
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
+    except Exception as e:
+        logger.error(f"Error general: {e}")
+        await update.message.reply_text(
+            "❌ *Error inesperado.* Contacta al soporte.",
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
+    finally:
+        # Limpiar archivos temporales
+        os.unlink(temp_input_path)
+        if os.path.exists(output_path):
+            os.unlink(output_path)
+        # Eliminar mensaje "procesando"
+        await context.bot.delete_message(
+            chat_id=update.message.chat_id,
+            message_id=processing_msg.message_id
+        )
+
+def main():
+    app = Application.builder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_video))
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
