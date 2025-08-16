@@ -1,79 +1,86 @@
 import os
 import secrets
-from flask import Flask, request, jsonify
-from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import CommandHandler, MessageHandler, filters, CallbackContext, dispatcher
-import threading
+from flask import Flask, request, jsonify, send_from_directory
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+    CallbackQueryHandler
+)
 import logging
 
-# Configuración
+# Configuración Flask
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'storage'
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-TOKEN = "7011073342:AAFvvoKngrMkFWGXQLgmtKRTcZrc48suP20"
-bot = Bot(token=TOKEN)
+TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 
-# Base de datos simple (para producción usa SQLite/PostgreSQL)
+# Base de datos simple
 file_db = {}
 
-# Generar ID de 24 caracteres
 def generate_id():
-    return secrets.token_urlsafe(18)[:24]  # Ej: 'aBcD1234eFgH5678iJkL9012'
+    return secrets.token_urlsafe(18)[:24]
 
-# Handlers de Telegram
-def start(update: Update, context: CallbackContext):
+# Handlers de Telegram (async ahora)
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_msg = """
     🚀 *Bienvenido a MiCloud Bot* 🚀
 
-    Envíame cualquier archivo y te daré un enlace de descarga directa con formato:
+    Envíame cualquier archivo y te daré un enlace de descarga directa:
     `https://micloud.com/<ID-24-caracteres>`
-
-    📌 *Características*:
-    - Soporta archivos hasta 100MB
-    - Enlaces permanentes
-    - Descarga ultrarrápida
     """
     keyboard = [
         [InlineKeyboardButton("🌐 Sitio Web", url="https://micloud.onrender.com")],
         [InlineKeyboardButton("📌 Ejemplo", callback_data='example')]
     ]
-    update.message.reply_text(
+    await update.message.reply_text(
         welcome_msg,
         parse_mode='Markdown',
         reply_markup=InlineKeyboardMarkup(keyboard))
-    
-def example(update: Update, context: CallbackContext):
-    update.callback_query.answer()
-    update.callback_query.message.reply_text(
+
+async def example(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    await update.callback_query.message.reply_text(
         "Ejemplo de enlace: https://micloud.com/aBcD1234eFgH5678iJkL9012")
 
-def handle_file(update: Update, context: CallbackContext):
-    file = update.message.effective_attachment
+async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    document = update.message.document
     file_id = generate_id()
+    file_name = document.file_name
     
     # Descargar archivo
-    file_path = os.path.join(app.config['UPLOAD_FOLDER'], file.file_name)
-    new_file = bot.get_file(file.file_id)
-    new_file.download(file_path)
+    file = await context.bot.get_file(document.file_id)
+    file_path = os.path.join(app.config['UPLOAD_FOLDER'], file_name)
+    await file.download_to_drive(file_path)
     
     # Registrar en DB
-    file_db[file_id] = file.file_name
+    file_db[file_id] = file_name
     
     # Responder con enlace
-    update.message.reply_text(
-        f"✅ *Archivo subido correctamente!*\n\n"
-        f"🔗 Enlace de descarga:\n"
-        f"`https://micloud.com/{file_id}`\n\n"
-        f"📁 Nombre: `{file.file_name}`",
+    await update.message.reply_text(
+        f"✅ *Archivo subido!*\n\n🔗 Enlace:\n`https://micloud.com/{file_id}`\n\n"
+        f"📁 Nombre: `{file_name}`",
         parse_mode='Markdown')
 
-# Configurar webhook para Telegram
+# Configuración del Bot
+application = Application.builder().token(TOKEN).build()
+
+# Registro de handlers
+application.add_handler(CommandHandler('start', start))
+application.add_handler(MessageHandler(filters.Document.ALL, handle_file))
+application.add_handler(CallbackQueryHandler(example, pattern='example'))
+
+# Webhook para Flask
 @app.route('/webhook', methods=['POST'])
-def webhook():
-    update = Update.de_json(request.get_json(force=True), bot)
-    dp.process_update(update)
-    return 'OK'
+async def telegram_webhook():
+    json_data = await request.get_json()
+    update = Update.de_json(json_data, application.bot)
+    await application.process_update(update)
+    return jsonify({"status": "ok"})
 
 # Servidor de archivos
 @app.route('/<file_id>')
@@ -85,14 +92,14 @@ def download_file(file_id):
             as_attachment=True)
     return jsonify({"error": "File not found"}), 404
 
-# Iniciar bot
-dp = Dispatcher(bot, None)
-dp.add_handler(CommandHandler('start', start))
-dp.add_handler(MessageHandler(Filters.document, handle_file))
-dp.add_handler(CallbackQueryHandler(example, pattern='example'))
-
 if __name__ == '__main__':
-    # Configurar webhook en producción
     if os.getenv('RENDER'):
-        bot.set_webhook(url=f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/webhook")
-    app.run(host='0.0.0.0', port=10000)
+        # Configuración para Render
+        application.run_webhook(
+            listen='0.0.0.0',
+            port=int(os.getenv('PORT', 10000)),
+            webhook_url=f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/webhook"
+        )
+    else:
+        # Modo desarrollo con polling
+        application.run_polling()
