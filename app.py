@@ -12,7 +12,7 @@ from telegram.ext import (
     ContextTypes,
 )
 
-# Configuración directa
+# Configuración directa (reemplaza esto con tu token real)
 TOKEN = "7011073342:AAFvvoKngrMkFWGXQLgmtKRTcZrc48suP20"
 DOWNLOAD_DIR = "downloads"
 PORT = 10000
@@ -108,15 +108,10 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await processing_msg.edit_text("No se encontraron formatos disponibles para descargar.")
             return
         
-        formats = formats[:8]
+        # Botones en VERTICAL (un botón por fila)
         keyboard = []
-        for i in range(0, len(formats), 2):
-            row = []
-            if i < len(formats):
-                row.append(InlineKeyboardButton(formats[i][1], callback_data=f"dl_{formats[i][0]}"))
-            if i + 1 < len(formats):
-                row.append(InlineKeyboardButton(formats[i + 1][1], callback_data=f"dl_{formats[i + 1][0]}"))
-            keyboard.append(row)
+        for format_id, desc in formats[:8]:  # Limitar a 8 formatos
+            keyboard.append([InlineKeyboardButton(desc, callback_data=f"dl_{format_id}")])
         
         keyboard.append([InlineKeyboardButton("❌ Cancelar", callback_data="cancel")])
         
@@ -169,12 +164,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             safe_title = "".join(c for c in title if c.isalnum() or c in (" ", "_")).rstrip()
             output_template = f"{DOWNLOAD_DIR}/{safe_title}.%(ext)s"
             
+            # Configuración especial para enviar como video
             cmd = [
                 "yt-dlp",
                 "-f", f"{format_id}+bestaudio" if "video" in format_id else format_id,
                 "--merge-output-format", "mp4",
+                "--recode-video", "mp4",  # Asegurar formato MP4
                 "-o", output_template,
                 "--no-playlist",
+                "--force-keyframes-at-cuts",  # Mejor para streaming
                 url,
             ]
             
@@ -196,24 +194,30 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             
             file_path = os.path.join(DOWNLOAD_DIR, downloaded_files[0])
-            file_size = os.path.getsize(file_path) / (1024 * 1024)
+            file_size = os.path.getsize(file_path) / (1024 * 1024)  # Tamaño en MB
             
-            if file_size > 50:
+            # Límite aumentado a 2GB cuando se envía como video (límite real de Telegram)
+            if file_size > 2000:  # 2GB
                 await downloading_msg.edit_text(
-                    "⚠️ El archivo es demasiado grande para enviar por Telegram (límite 50MB).\n\n"
+                    "⚠️ El video es demasiado grande (límite 2GB).\n\n"
                     f"Tamaño: {file_size:.1f}MB"
                 )
             else:
                 await context.bot.send_chat_action(
-                    chat_id=query.message.chat_id, action="upload_document"
+                    chat_id=query.message.chat_id, action="upload_video"
                 )
                 
-                await context.bot.send_document(
+                # Enviar como VIDEO (no como documento)
+                await context.bot.send_video(
                     chat_id=query.message.chat_id,
-                    document=open(file_path, "rb"),
+                    video=open(file_path, "rb"),
                     caption=f"✅ <b>{title}</b>\n\n"
                     f"📦 Tamaño: {file_size:.1f}MB",
+                    supports_streaming=True,  # Permite reproducción mientras se descarga
                     parse_mode="HTML",
+                    read_timeout=60,
+                    write_timeout=60,
+                    connect_timeout=60,
                 )
                 await downloading_msg.delete()
             
@@ -223,6 +227,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Error al descargar el video: {e}")
             await downloading_msg.edit_text("❌ Ocurrió un error al descargar el video.")
         finally:
+            # Limpieza de archivos temporales
             for f in downloaded_files:
                 try:
                     os.remove(os.path.join(DOWNLOAD_DIR, f))
