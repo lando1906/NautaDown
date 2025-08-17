@@ -32,10 +32,6 @@ logger = logging.getLogger(__name__)
 # Asegurar que el directorio de descargas existe
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-# --------------------------
-# Funciones de video_utils.py
-# --------------------------
-
 def sanitize_title(title: str) -> str:
     """Limpia el título para usarlo como nombre de archivo seguro."""
     if not title:
@@ -43,13 +39,13 @@ def sanitize_title(title: str) -> str:
     title = title.strip()
     title = re.sub(r"[^\w\s-]", "", title)
     title = re.sub(r"\s+", "_", title)
-    return title[:100]  # Limita a 100 caracteres
+    return title[:100]
 
 def prepare_download_command(url: str, format_id: str, safe_title: str) -> tuple[list, str]:
     """Prepara el comando yt-dlp para descargar el video."""
     if not all([url, format_id, safe_title]):
-        raise ValueError("Parámetros inválidos (url, format_id o safe_title vacíos)")
-    
+        raise ValueError("Parámetros inválidos")
+
     output_path = os.path.join(DOWNLOAD_DIR, f"{safe_title}.mp4")
     cmd = [
         "yt-dlp",
@@ -67,13 +63,13 @@ def is_valid_video(file_path: str) -> bool:
     """Verifica si el archivo existe y tiene tamaño suficiente."""
     if not file_path:
         return False
-    return os.path.exists(file_path) and os.path.getsize(file_path) > 1024 * 100  # >100KB
+    return os.path.exists(file_path) and os.path.getsize(file_path) > 1024 * 100
 
 def cleanup_files(base_name: str):
     """Elimina archivos relacionados con el video descargado."""
     if not base_name:
         return
-    
+
     for ext in [".mp4", ".mkv", ".webm", ".part", ".temp"]:
         path = os.path.join(DOWNLOAD_DIR, f"{base_name}{ext}")
         if os.path.exists(path):
@@ -81,15 +77,6 @@ def cleanup_files(base_name: str):
                 os.remove(path)
             except:
                 pass
-
-    # Elimina carpeta de thumbnails si existe
-    thumb_dir = os.path.join(DOWNLOAD_DIR, f"{base_name}_thumbs")
-    if os.path.isdir(thumb_dir):
-        shutil.rmtree(thumb_dir, ignore_errors=True)
-
-# --------------------------
-# Funciones de progress_handler.py
-# --------------------------
 
 # Regex para extraer progreso de yt-dlp
 progress_pattern = re.compile(
@@ -100,7 +87,7 @@ async def stream_download_progress(cmd: list, message: Message) -> Optional[str]
     """Ejecuta yt-dlp y actualiza el progreso en tiempo real."""
     filepath = None
     last_progress = 0
-    
+
     try:
         with subprocess.Popen(
             cmd,
@@ -110,7 +97,7 @@ async def stream_download_progress(cmd: list, message: Message) -> Optional[str]
             bufsize=1,
             universal_newlines=True
         ) as process:
-            
+
             while process.poll() is None:
                 line = process.stdout.readline()
                 if not line:
@@ -143,7 +130,6 @@ async def stream_download_progress(cmd: list, message: Message) -> Optional[str]
 
                 await asyncio.sleep(1)
 
-            # Verificar si la descarga fue exitosa
             if process.returncode != 0:
                 error_msg = "❌ Error en la descarga"
                 if filepath and os.path.exists(filepath):
@@ -156,36 +142,8 @@ async def stream_download_progress(cmd: list, message: Message) -> Optional[str]
         await message.edit_text(error_msg, parse_mode="HTML")
         return None
 
-    await message.edit_text("✅ <b>Descarga completada</b>", parse_mode="HTML")
+    await message.edit_text("✅ <b>Descarga completada</b>\n📤 <b>Preparando envío...</b>", parse_mode="HTML")
     return filepath
-
-async def simulate_upload_progress(message: Message, filepath: str):
-    """Simula el progreso de subida basado en el tamaño real del archivo."""
-    try:
-        file_size = os.path.getsize(filepath)
-        file_size_mb = file_size / (1024 * 1024)
-        
-        # Progreso más realista
-        stages = [5, 15, 30, 50, 70, 85, 95, 100]
-        time_per_stage = 10 / len(stages)  # Total 10 segundos
-        
-        for progress in stages:
-            await message.edit_text(
-                f"📤 <b>Subiendo video...</b>\n\n"
-                f"📦 Tamaño: {file_size_mb:.1f}MB\n"
-                f"📊 Progreso: {progress}%",
-                parse_mode="HTML"
-            )
-            await asyncio.sleep(time_per_stage)
-            
-    except Exception as e:
-        logger.error(f"Error en simulación de subida: {e}")
-    
-    await message.edit_text("✅ <b>Video enviado</b>", parse_mode="HTML")
-
-# --------------------------
-# Handlers de Telegram
-# --------------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Maneja el comando /start."""
@@ -215,7 +173,6 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         video_info = json.loads(result.stdout)
         title = video_info.get("title", "Video sin título")
-        duration = video_info.get("duration", 0)
 
         # Obtener formatos disponibles
         cmd_formats = ["yt-dlp", "--list-formats", "--format-sort", "vcodec:h264,res,br", url]
@@ -245,10 +202,8 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton("❌ Cancelar", callback_data="cancel")])
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        duration_str = f"{duration//60}:{duration%60:02d}" if duration else "Desconocida"
-
         await processing_msg.edit_text(
-            f"📹 <b>{title}</b>\n⏱ Duración: {duration_str}\n\nSelecciona el formato:",
+            f"📹 <b>{title}</b>\n\nSelecciona el formato:",
             reply_markup=reply_markup,
             parse_mode="HTML",
         )
@@ -304,24 +259,22 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"Tamaño: {file_size:.1f}MB"
                 )
             else:
-                # Simular subida
-                await simulate_upload_progress(downloading_msg, file_path)
-
-                # Enviar video
+                # Enviar video directamente
                 await context.bot.send_chat_action(
                     chat_id=query.message.chat_id, 
                     action="upload_video"
                 )
-                await context.bot.send_video(
-                    chat_id=query.message.chat_id,
-                    video=open(file_path, "rb"),
-                    caption=f"✅ <b>{title}</b>\n\n📦 Tamaño: {file_size:.1f}MB",
-                    supports_streaming=True,
-                    parse_mode="HTML",
-                    read_timeout=60,
-                    write_timeout=60,
-                    connect_timeout=60,
-                )
+                with open(file_path, "rb") as video_file:
+                    await context.bot.send_video(
+                        chat_id=query.message.chat_id,
+                        video=video_file,
+                        caption=f"✅ <b>{title}</b>\n\n📦 Tamaño: {file_size:.1f}MB",
+                        supports_streaming=True,
+                        parse_mode="HTML",
+                        read_timeout=60,
+                        write_timeout=60,
+                        connect_timeout=60,
+                    )
                 await downloading_msg.delete()
 
         except Exception as e:
@@ -336,14 +289,10 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message:
         await update.message.reply_text("❌ Ocurrió un error inesperado.")
 
-# --------------------------
-# Inicialización
-# --------------------------
-
 def main():
     """Configura y ejecuta el bot."""
     application = Application.builder().token(TOKEN).build()
-    
+
     # Registro de handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_url))
