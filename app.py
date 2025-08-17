@@ -7,12 +7,13 @@ from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
-    filters,
     CallbackQueryHandler,
     ContextTypes,
+    filters,
 )
 
 from video_utils import sanitize_title, is_valid_video, prepare_download_command, cleanup_files
+from progress_handler import stream_download_progress, simulate_upload_progress
 
 TOKEN = "7011073342:AAFvvoKngrMkFWGXQLgmtKRTcZrc48suP20"
 DOWNLOAD_DIR = "downloads"
@@ -120,15 +121,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             safe_title = sanitize_title(title)
             cmd, file_path = prepare_download_command(url, format_id, safe_title)
 
-            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            stdout, stderr = process.communicate(timeout=900)
+            # ⏳ Progreso de descarga en tiempo real
+            file_path = await stream_download_progress(cmd, downloading_msg)
 
-            if process.returncode != 0 or not is_valid_video(file_path):
-                error_msg = stderr.decode("utf-8")[:500]
-                await downloading_msg.edit_text(
-                    f"❌ Error al descargar o validar el video:\n\n<code>{error_msg}</code>",
-                    parse_mode="HTML",
-                )
+            # ✅ Validación
+            if not is_valid_video(file_path):
+                await downloading_msg.edit_text("❌ El archivo descargado no es válido.")
                 return
 
             file_size = os.path.getsize(file_path) / (1024 * 1024)
@@ -139,6 +137,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"Tamaño: {file_size:.1f}MB"
                 )
             else:
+                # 📤 Simulación de subida
+                await simulate_upload_progress(downloading_msg, file_size)
+
                 await context.bot.send_chat_action(chat_id=query.message.chat_id, action="upload_video")
                 await context.bot.send_video(
                     chat_id=query.message.chat_id,
