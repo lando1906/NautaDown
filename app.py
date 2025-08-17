@@ -3,9 +3,7 @@ import re
 import json
 import asyncio
 import logging
-import time
-from typing import Optional
-from telegram import Update, Message, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -15,233 +13,180 @@ from telegram.ext import (
     filters,
 )
 
-# Configuración
+# 🔥 Configuración Directa (Optimizada para Render)
 TOKEN = "8470331129:AAHBJWD_p9m7TMMYPD2iaBZBHLzCLUFpHQw"
 DOWNLOAD_DIR = "downloads"
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+PORT = 10000  # Render usa este puerto por defecto
+WEBHOOK_URL = "https://videodown-77kj.onrender.com"  # Reemplaza con tu URL de Render
 
-# Logging
+# ⚡ Configuración Avanzada de yt-dlp
+YTDLP_CONFIG = [
+    "--external-downloader", "aria2c",
+    "--external-downloader-args", "-x16 -s16 -k1M",  # 16 conexiones paralelas
+    "--no-warnings",
+    "--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]",
+    "--quiet"
+]
+
+# 📝 Configuración de Logging
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Regex para progreso de descarga
-progress_pattern = re.compile(
-    r"\[download\]\s+(\d+\.\d+)%\s+of\s+~?([\d\.]+\w+)\s+at\s+([\d\.]+\w+\/s)\s+ETA\s+([\d:]+)"
-)
+# 🛠️ Funciones Esenciales
+def sanitize_filename(title: str) -> str:
+    """Limpia el título para crear nombres de archivo seguros"""
+    return re.sub(r'[^\w\-_\. ]', '', title[:50]).strip().replace(' ', '_')
 
-# --------------------------
-# Funciones Clave
-# --------------------------
-
-def sanitize_title(title: str) -> str:
-    """Limpia el título para usarlo como nombre de archivo."""
-    return re.sub(r"[^\w\s-]", "", title)[:100].replace(" ", "_")
-
-async def run_command(cmd: list) -> tuple[str, str]:
-    """Ejecuta un comando y retorna (stdout, stderr)."""
+async def run_ytdlp(command: list) -> tuple:
+    """Ejecuta yt-dlp de forma asíncrona"""
     process = await asyncio.create_subprocess_exec(
-        *cmd,
+        "yt-dlp",
+        *command,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE
     )
-    stdout, stderr = await process.communicate()
-    return stdout.decode(), stderr.decode()
+    return await process.communicate()
 
-async def stream_download_progress(cmd: list, message: Message) -> Optional[str]:
-    """Muestra el progreso de descarga en tiempo real."""
-    filepath = None
-    process = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT
-    )
-
-    last_update = 0
-    while True:
-        line = (await process.stdout.readline()).decode().strip()
-        if not line:
-            if process.returncode is not None:
-                break
-            await asyncio.sleep(0.1)
-            continue
-
-        # Actualizar progreso cada 1 segundo
-        if time.time() - last_update >= 1:
-            if match := progress_pattern.search(line):
-                percent, size, speed, eta = match.groups()
-                text = (
-                    f"⏳ **Descargando...**\n\n"
-                    f"📏 **Tamaño:** `{size}`\n"
-                    f"📊 **Progreso:** `{percent}%`\n"
-                    f"⚡ **Velocidad:** `{speed}`\n"
-                    f"⏱ **ETA:** `{eta}`"
-                )
-                try:
-                    await message.edit_text(text, parse_mode="Markdown")
-                    last_update = time.time()
-                except Exception as e:
-                    logger.error(f"Error editando mensaje: {e}")
-
-        # Detectar ruta del archivo
-        if "[download] Destination:" in line:
-            filepath = line.split("Destination:")[-1].strip()
-
-    if process.returncode != 0:
-        if filepath and os.path.exists(filepath):
-            os.remove(filepath)
-        await message.edit_text("❌ **Error en la descarga**", parse_mode="Markdown")
-        return None
-
-    await message.edit_text("✅ **Descarga completada**\n📤 **Enviando video...**", parse_mode="Markdown")
-    return filepath
-
-# --------------------------
-# Handlers de Telegram
-# --------------------------
-
+# 💻 Handlers de Comandos
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Maneja el comando /start."""
+    """Maneja el comando /start"""
     await update.message.reply_text(
-        "🎬 **Bot Descargador de Videos**\n\n"
-        "Envía un enlace de YouTube, Twitter, TikTok, etc. y te lo descargaré al instante.\n\n"
-        "⚡ **Velocidad máxima garantizada**"
+        "⚡ **Bot Descargador VIP**\n\n"
+        "Envía el enlace de cualquier video y lo descargaré al instante con calidad premium.\n\n"
+        "🔹 Soporte: YouTube, Twitter, TikTok, Instagram, etc.\n"
+        "🚀 Velocidad: 16 conexiones paralelas (aria2c)",
+        parse_mode="Markdown"
     )
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Procesa la URL y muestra formatos disponibles."""
+    """Procesa URLs de video"""
     url = update.message.text.strip()
-    if not url.startswith(("http://", "https://")):
-        await update.message.reply_text("⚠️ **Envía una URL válida.**")
-        return
+    
+    if not re.match(r'https?://\S+', url):
+        return await update.message.reply_text("⚠️ URL inválida. Ejemplo: https://www.youtube.com/watch?v=...")
 
-    msg = await update.message.reply_text("🔍 **Analizando video...**")
-
+    msg = await update.message.reply_text("🔍 *Analizando video...*", parse_mode="Markdown")
+    
     try:
-        # Obtener metadatos
-        stdout, _ = await run_command([
-            "yt-dlp", "--dump-json", "--no-playlist", url
-        ])
-        video_info = json.loads(stdout)
-        title = video_info.get("title", "video")
-
-        # Obtener formatos
-        stdout, _ = await run_command([
-            "yt-dlp", "--list-formats", "--format-sort", "vcodec:h264,res,br", url
-        ])
-
-        # Parsear formatos
-        formats = []
-        for line in stdout.split("\n"):
-            if "audio only" in line.lower() or "video only" in line.lower():
-                parts = [p for p in line.split() if p]
-                if len(parts) >= 3:
-                    format_id = parts[0]
-                    resolution = next((p for p in parts if "x" in p), "?")
-                    size = next((p for p in parts if "MiB" in p or "KiB" in p), "?MB")
-                    desc = f"{resolution} | {size}"
-                    formats.append((format_id, desc))
-
-        if not formats:
-            await msg.edit_text("❌ **No se encontraron formatos disponibles.**")
-            return
-
-        # Crear teclado
+        # Obtener metadatos del video
+        stdout, _ = await run_ytdlp(["--dump-json", url])
+        info = json.loads(stdout)
+        
+        # Crear menú de opciones
         keyboard = [
-            [InlineKeyboardButton(desc, callback_data=f"dl_{fid}")]
-            for fid, desc in formats[:8]
+            [InlineKeyboardButton("🎥 Máxima Calidad", callback_data=f"best_{url}")],
+            [InlineKeyboardButton("📱 720p (Optimizado)", callback_data=f"720_{url}")],
+            [InlineKeyboardButton("🔊 Solo Audio", callback_data=f"audio_{url}")]
         ]
-        keyboard.append([InlineKeyboardButton("❌ Cancelar", callback_data="cancel")])
-
+        
         await msg.edit_text(
-            f"🎥 **{title}**\n\nSelecciona un formato:",
+            f"📌 **{info.get('title', 'Video')}**\n\n"
+            f"⏱ Duración: {info.get('duration', 'N/A')}s\n"
+            f"👁 Vistas: {info.get('view_count', 'N/A')}\n\n"
+            "Seleccione calidad:",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="Markdown"
         )
-        context.user_data["url"] = url
-        context.user_data["title"] = title
-
+        
     except Exception as e:
         logger.error(f"Error: {e}")
-        await msg.edit_text("❌ **Error al procesar el video.**")
+        await msg.edit_text("❌ Error al procesar el video")
 
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Maneja la selección de formato."""
+async def download_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Maneja las descargas"""
     query = update.callback_query
     await query.answer()
-
-    if query.data == "cancel":
-        await query.edit_message_text("✅ **Operación cancelada.**")
-        return
-
-    if query.data.startswith("dl_"):
-        format_id = query.data.split("_")[1]
-        url = context.user_data.get("url")
-        title = context.user_data.get("title", "video")
-
-        if not url:
-            await query.edit_message_text("❌ **URL no encontrada.**")
-            return
-
-        msg = await query.edit_message_text("⚡ **Preparando descarga...**")
-
-        try:
-            safe_title = sanitize_title(title)
-            output = os.path.join(DOWNLOAD_DIR, f"{safe_title}.mp4")
-            cmd = [
-                "yt-dlp",
-                "-f", format_id,
-                "-o", output,
-                "--no-playlist",
-                "--external-downloader", "aria2c",  # ¡Más velocidad!
-                "--external-downloader-args", "-x16 -s16 -k1M",
-                url
-            ]
-
-            # Descargar con progreso
-            filepath = await stream_download_progress(cmd, msg)
-
-            if not filepath or not os.path.exists(filepath):
-                return
-
-            # Enviar video
-            await context.bot.send_chat_action(
-                chat_id=query.message.chat_id,
-                action="upload_video"
-            )
-            with open(filepath, "rb") as video:
+    
+    quality, url = query.data.split('_', 1)
+    msg = await query.edit_message_text("⚡ *Iniciando descarga VIP...*", parse_mode="Markdown")
+    
+    try:
+        # Configuración según calidad seleccionada
+        if quality == "best":
+            format_flag = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]"
+            file_ext = ".mp4"
+        elif quality == "720":
+            format_flag = "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]"
+            file_ext = "_720p.mp4"
+        else:  # audio
+            format_flag = "bestaudio[ext=m4a]"
+            file_ext = ".m4a"
+        
+        # Generar nombre de archivo único
+        file_name = f"dl_{query.id}{file_ext}"
+        file_path = os.path.join(DOWNLOAD_DIR, file_name)
+        
+        # Comando de descarga
+        cmd = [
+            *YTDLP_CONFIG,
+            "--format", format_flag,
+            "--output", file_path,
+            url
+        ]
+        
+        # Ejecutar descarga
+        await msg.edit_text("🚀 *Descargando con 16 conexiones...*", parse_mode="Markdown")
+        await run_ytdlp(cmd)
+        
+        # Verificar archivo
+        if not os.path.exists(file_path) or os.path.getsize(file_path) < 102400:  # 100KB mínimo
+            raise ValueError("Archivo descargado inválido")
+        
+        # Enviar archivo
+        await context.bot.send_chat_action(
+            chat_id=query.message.chat_id,
+            action="upload_video" if quality != "audio" else "upload_audio"
+        )
+        
+        with open(file_path, "rb") as file:
+            if quality == "audio":
+                await context.bot.send_audio(
+                    chat_id=query.message.chat_id,
+                    audio=file,
+                    caption="🎧 Audio descargado con calidad premium",
+                    parse_mode="Markdown"
+                )
+            else:
                 await context.bot.send_video(
                     chat_id=query.message.chat_id,
-                    video=video,
-                    caption=f"🎥 **{title}**",
+                    video=file,
+                    caption=f"🎬 Video en {quality} | Descarga VIP",
                     supports_streaming=True,
                     parse_mode="Markdown"
                 )
-            await msg.delete()
+        
+        await msg.delete()
+        
+    except Exception as e:
+        logger.error(f"Error en descarga: {e}")
+        await msg.edit_text("❌ Error VIP: No se completó la descarga")
+    finally:
+        if os.path.exists(file_path):
+            os.remove(file_path)
 
-        except Exception as e:
-            logger.error(f"Error: {e}")
-            await msg.edit_text("❌ **Error al enviar el video.**")
-        finally:
-            if filepath and os.path.exists(filepath):
-                os.remove(filepath)
-
-# --------------------------
-# Inicialización
-# --------------------------
-
+# 🚀 Inicialización del Bot
 def main():
+    # Crear directorio de descargas
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    
+    # Configurar aplicación
     app = Application.builder().token(TOKEN).build()
-
-    # Handlers
+    
+    # Registrar handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
-    app.add_handler(CallbackQueryHandler(button_callback))
-
-    # Iniciar bot
-    app.run_polling()
+    app.add_handler(CallbackQueryHandler(download_handler))
+    
+    # Modo Render (Webhook)
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=TOKEN,
+        webhook_url=f"{WEBHOOK_URL}/{TOKEN}"
+    )
 
 if __name__ == "__main__":
     main()
