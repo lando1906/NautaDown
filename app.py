@@ -17,7 +17,7 @@ from telegram.ext import (
 )
 
 # Configuración básica
-TOKEN = "7011073342:AAFvvoKngrMkFWGXQLgmtKRTcZrc48suP20"
+TOKEN = "8470331129:AAHBJWD_p9m7TMMYPD2iaBZBHLzCLUFpHQw"
 DOWNLOAD_DIR = "downloads"
 PORT = 10000
 HOST = "0.0.0.0"
