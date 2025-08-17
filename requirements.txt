@@ -7,7 +7,7 @@ qrcode
 python-telegram-bot
 python-telegram-bot[webhooks]
 asyncio
-aria2p
+aria2c
 werkzeug
 gunicorn
 psutil
