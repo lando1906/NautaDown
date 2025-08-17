@@ -1,46 +1,54 @@
 import os
-import subprocess
-import logging
+import re
+import shutil
 
 DOWNLOAD_DIR = "downloads"
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-
-logger = logging.getLogger(__name__)
 
 def sanitize_title(title: str) -> str:
-    """Limpia el título para usarlo como nombre de archivo"""
-    return "".join(c for c in title if c.isalnum() or c in (" ", "_")).rstrip()
+    """
+    Limpia el título para usarlo como nombre de archivo seguro.
+    """
+    title = title.strip()
+    title = re.sub(r"[^\w\s-]", "", title)
+    title = re.sub(r"\s+", "_", title)
+    return title[:100]  # Limita a 100 caracteres
 
-def is_valid_video(file_path: str) -> bool:
-    """Verifica si el archivo existe y tiene tamaño mínimo"""
-    try:
-        return os.path.exists(file_path) and os.path.getsize(file_path) > 1024 * 100
-    except:
-        return False
-
-def prepare_download_command(url: str, format_id: str, safe_title: str) -> tuple:
-    """Genera el comando yt-dlp para descargar y remuxear el video"""
+def prepare_download_command(url: str, format_id: str, safe_title: str):
+    """
+    Prepara el comando yt-dlp para descargar el video en el formato seleccionado.
+    """
     output_path = os.path.join(DOWNLOAD_DIR, f"{safe_title}.mp4")
-
     cmd = [
         "yt-dlp",
-        "-f", f"{format_id}+bestaudio" if "video" in format_id else format_id,
-        "--remux-video", "mp4",
-        "--embed-metadata",
-        "--embed-thumbnail",
-        "--add-metadata",
-        "--output", output_path,
+        "-f", format_id,
+        "-o", output_path,
         "--no-playlist",
-        "--force-keyframes-at-cuts",
-        url,
+        "--no-warnings",
+        "--quiet",
+        "--no-cache-dir",
+        url
     ]
     return cmd, output_path
 
-def cleanup_files(prefix: str):
-    """Elimina archivos descargados que comiencen con el prefijo"""
-    for f in os.listdir(DOWNLOAD_DIR):
-        if f.startswith(prefix):
+def is_valid_video(file_path: str) -> bool:
+    """
+    Verifica si el archivo existe y tiene tamaño suficiente para considerarse válido.
+    """
+    return os.path.exists(file_path) and os.path.getsize(file_path) > 1024 * 100  # >100KB
+
+def cleanup_files(base_name: str):
+    """
+    Elimina archivos relacionados con el video descargado.
+    """
+    for ext in [".mp4", ".mkv", ".webm", ".part", ".temp"]:
+        path = os.path.join(DOWNLOAD_DIR, f"{base_name}{ext}")
+        if os.path.exists(path):
             try:
-                os.remove(os.path.join(DOWNLOAD_DIR, f))
-            except Exception as e:
-                logger.warning(f"No se pudo eliminar {f}: {e}")
+                os.remove(path)
+            except:
+                pass
+
+    # Elimina carpeta de thumbnails o metadata si existe
+    thumb_dir = os.path.join(DOWNLOAD_DIR, f"{base_name}_thumbs")
+    if os.path.isdir(thumb_dir):
+        shutil.rmtree(thumb_dir, ignore_errors=True)
