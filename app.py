@@ -12,15 +12,16 @@ from telegram.ext import (
     ContextTypes,
 )
 
-# Configuración
-TOKEN = os.getenv("7011073342:AAFvvoKngrMkFWGXQLgmtKRTcZrc48suP20")  # Usar variable de entorno en Render
+# Configuración directa
+TOKEN = "7011073342:AAFvvoKngrMkFWGXQLgmtKRTcZrc48suP20"
 DOWNLOAD_DIR = "downloads"
-PORT = int(os.getenv("PORT", 10000))  # Para Render
-HOST = os.getenv("HOST", "0.0.0.0")  # Para Render
+PORT = 10000
+HOST = "0.0.0.0"
 
 # Configurar logging
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
@@ -40,16 +41,13 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Maneja cuando el usuario envía una URL"""
     url = update.message.text.strip()
     
-    # Verificar si es una URL válida
     if not (url.startswith("http://") or url.startswith("https://")):
         await update.message.reply_text("⚠️ Por favor envía una URL válida (comience con http:// o https://)")
         return
     
     try:
-        # Mostrar mensaje de "procesando"
         processing_msg = await update.message.reply_text("🔍 Obteniendo información del video...")
         
-        # Obtener información del video con yt-dlp en formato JSON
         cmd_info = [
             "yt-dlp",
             "--dump-json",
@@ -68,11 +66,10 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         title = video_info.get("title", "Video sin título")
         duration = video_info.get("duration", 0)
         
-        # Obtener formatos disponibles con tamaño estimado
         cmd_formats = [
             "yt-dlp",
             "--list-formats",
-            "--format-sort", "vcodec:h264,res,br",  # Priorizar h264
+            "--format-sort", "vcodec:h264,res,br",
             url,
         ]
         
@@ -84,7 +81,6 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         formats_output = result.stdout
         
-        # Procesar formatos disponibles
         formats = []
         lines = formats_output.split("\n")
         for line in lines:
@@ -94,11 +90,8 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     format_id = parts[0]
                     resolution = next((p for p in parts if "x" in p and p[0].isdigit()), None)
                     codec = parts[1]
-                    
-                    # Extraer tamaño aproximado (si está disponible)
                     size = next((p for p in parts if "MiB" in p or "KiB" in p), "?MB")
                     
-                    # Crear descripción amigable
                     desc = ""
                     if resolution:
                         desc += f"{resolution} "
@@ -115,7 +108,6 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await processing_msg.edit_text("No se encontraron formatos disponibles para descargar.")
             return
         
-        # Crear botonera (máximo 8 formatos para no saturar)
         formats = formats[:8]
         keyboard = []
         for i in range(0, len(formats), 2):
@@ -126,12 +118,10 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 row.append(InlineKeyboardButton(formats[i + 1][1], callback_data=f"dl_{formats[i + 1][0]}"))
             keyboard.append(row)
         
-        # Añadir botón de cancelar
         keyboard.append([InlineKeyboardButton("❌ Cancelar", callback_data="cancel")])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        # Mensaje con información del video
         duration_str = f"{duration//60}:{duration%60:02d}" if duration else "Desconocida"
         
         await processing_msg.edit_text(
@@ -142,7 +132,6 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
         )
         
-        # Guardar información del video en el contexto
         context.user_data["current_url"] = url
         context.user_data["video_title"] = title
         
@@ -170,7 +159,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Error: URL no encontrada.")
             return
         
-        # Mensaje de descarga en progreso
         downloading_msg = await query.edit_message_text(
             f"⏳ Descargando: <b>{title}</b>\n\n"
             "Por favor espera, esto puede tomar varios minutos...",
@@ -178,11 +166,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
         try:
-            # Limpiar el título para usarlo como nombre de archivo
             safe_title = "".join(c for c in title if c.isalnum() or c in (" ", "_")).rstrip()
             output_template = f"{DOWNLOAD_DIR}/{safe_title}.%(ext)s"
             
-            # Descargar el video con el formato seleccionado
             cmd = [
                 "yt-dlp",
                 "-f", f"{format_id}+bestaudio" if "video" in format_id else format_id,
@@ -192,30 +178,27 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 url,
             ]
             
-            # Ejecutar yt-dlp con timeout de 15 minutos
             process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             stdout, stderr = process.communicate(timeout=900)
             
             if process.returncode != 0:
-                error_msg = stderr.decode("utf-8")[:500]  # Limitar longitud del mensaje de error
+                error_msg = stderr.decode("utf-8")[:500]
                 await downloading_msg.edit_text(
                     f"❌ Error al descargar el video:\n\n<code>{error_msg}</code>",
                     parse_mode="HTML",
                 )
                 return
             
-            # Buscar el archivo descargado
             downloaded_files = [f for f in os.listdir(DOWNLOAD_DIR) if f.startswith(safe_title)]
             
             if not downloaded_files:
                 await downloading_msg.edit_text("❌ Error: No se encontró el archivo descargado.")
                 return
             
-            # Enviar el archivo al usuario
             file_path = os.path.join(DOWNLOAD_DIR, downloaded_files[0])
-            file_size = os.path.getsize(file_path) / (1024 * 1024)  # Tamaño en MB
+            file_size = os.path.getsize(file_path) / (1024 * 1024)
             
-            if file_size > 50:  # Límite de Telegram: 50MB
+            if file_size > 50:
                 await downloading_msg.edit_text(
                     "⚠️ El archivo es demasiado grande para enviar por Telegram (límite 50MB).\n\n"
                     f"Tamaño: {file_size:.1f}MB"
@@ -240,7 +223,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Error al descargar el video: {e}")
             await downloading_msg.edit_text("❌ Ocurrió un error al descargar el video.")
         finally:
-            # Limpiar archivos descargados
             for f in downloaded_files:
                 try:
                     os.remove(os.path.join(DOWNLOAD_DIR, f))
@@ -257,29 +239,19 @@ def main():
     """Inicia el bot"""
     application = Application.builder().token(TOKEN).build()
     
-    # Manejadores de comandos
+    # Manejadores
     application.add_handler(CommandHandler("start", start))
-    
-    # Manejador de URLs
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_url))
-    
-    # Manejador de botones
     application.add_handler(CallbackQueryHandler(button_callback))
-    
-    # Manejador de errores
     application.add_error_handler(error_handler)
     
     # Configuración para Render
-    if os.getenv("RENDER"):
-        application.run_webhook(
-            listen=HOST,
-            port=PORT,
-            url_path=TOKEN,
-            webhook_url=f"https://{os.getenv('RENDER_SERVICE_NAME')}.onrender.com/{TOKEN}",
-        )
-    else:
-        # Modo local para desarrollo
-        application.run_polling()
+    application.run_webhook(
+        listen=HOST,
+        port=PORT,
+        url_path=TOKEN,
+        webhook_url=f"https://videodown-77kj.onrender.com/{TOKEN}",
+    )
 
 if __name__ == "__main__":
     main()
