@@ -15,7 +15,7 @@ from telegram.ext import (
 # Configuración
 TOKEN = os.getenv("7011073342:AAFvvoKngrMkFWGXQLgmtKRTcZrc48suP20")  # Usar variable de entorno en Render
 DOWNLOAD_DIR = "downloads"
-PORT = int(os.getenv("PORT", 8443))  # Para Render
+PORT = int(os.getenv("PORT", 10000))  # Para Render
 HOST = os.getenv("HOST", "0.0.0.0")  # Para Render
 
 # Configurar logging
