@@ -8,6 +8,7 @@ python-telegram-bot
 python-telegram-bot[webhooks]
 asyncio
 aria2c
+aria2p
 werkzeug
 gunicorn
 psutil
