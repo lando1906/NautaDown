@@ -21,7 +21,7 @@ DOWNLOAD_DIR = "downloads"
 PORT = 10000
 WEBHOOK_URL = "https://videodown-77kj.onrender.com"
 
-# Configuración mejorada de yt-dlp
+# Configuración de yt-dlp
 YTDLP_CONFIG = {
     "outtmpl": os.path.join(DOWNLOAD_DIR, "%(id)s.%(ext)s"),
     "quiet": True,
@@ -36,30 +36,22 @@ YTDLP_CONFIG = {
     "progress_hooks": [lambda d: None],
 }
 
+# Configuración de logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
+# Almacenamiento temporal para datos de descarga
 download_data = {}
 MAX_RETRIES = 3
-
-def safe_compare(a, b):
-    """Comparación segura que maneja valores None"""
-    if a is None and b is None:
-        return 0
-    if a is None:
-        return -1
-    if b is None:
-        return 1
-    return (a > b) - (a < b)
 
 def sanitize_filename(title: str) -> str:
     return re.sub(r'[^\w\-_\. ]', '', title[:50]).strip().replace(' ', '_')
 
 async def get_video_info(url: str, retry_count: int = 0) -> dict:
-    """Obtiene metadatos del video con manejo de errores mejorado"""
+    """Obtiene metadatos del video con manejo de errores"""
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
@@ -171,23 +163,26 @@ async def create_keyboard(formats: list, page: int = 0, per_page: int = 8) -> In
     """Crea un teclado inline paginado con todos los formatos"""
     keyboard = []
     
-    # Ordenar formatos de manera segura
     def sort_key(f):
-        video_score = 0 if f['vcodec'] != 'none' else 1
-        audio_score = 0 if f['acodec'] != 'none' else 1
+        """Función de ordenación segura que maneja valores None"""
         height = f.get('height', 0) or 0
         size_mb = f.get('size_mb', 0) or 0
         tbr = f.get('tbr', 0) or 0
+        fps = f.get('fps', 0) or 0
+        
+        has_video = 0 if f['vcodec'] != 'none' else 1
+        has_audio = 0 if f['acodec'] != 'none' else 1
         
         return (
-            video_score,
-            audio_score,
-            height,
-            size_mb,
-            tbr
+            has_video,
+            has_audio,
+            -height,
+            -size_mb,
+            -tbr,
+            -fps
         )
     
-    formats.sort(key=sort_key, reverse=True)
+    formats.sort(key=sort_key)
     
     # Paginación
     total_pages = (len(formats) + per_page - 1) // per_page
