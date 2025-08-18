@@ -61,21 +61,21 @@ async def get_video_info(url: str, retry_count: int = 0) -> dict:
             }
         }
     }
-    
+
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             return ydl.sanitize_info(info)
-            
+
     except yt_dlp.utils.DownloadError as e:
         if retry_count < MAX_RETRIES:
             logger.warning(f"Reintentando ({retry_count + 1}/{MAX_RETRIES})...")
             await asyncio.sleep(2)
             return await get_video_info(url, retry_count + 1)
-            
+
         logger.error(f"Error al obtener info: {str(e)}")
         raise Exception(f"No se pudo obtener información del video. Error: {str(e)}")
-        
+
     except Exception as e:
         logger.error(f"Error inesperado al obtener info: {str(e)}")
         raise Exception(f"Error al procesar el enlace: {str(e)}")
@@ -87,7 +87,7 @@ async def get_format_size(format_entry: dict) -> float:
 def create_button_label(format_info: dict) -> str:
     """Crea una etiqueta descriptiva para el botón"""
     label_parts = []
-    
+
     # Tipo de contenido
     if format_info['vcodec'] != 'none' and format_info['acodec'] != 'none':
         content_type = "🎥 Video+Audio"
@@ -95,27 +95,27 @@ def create_button_label(format_info: dict) -> str:
         content_type = "🎥 Video"
     else:
         content_type = "🔊 Audio"
-    
+
     label_parts.append(content_type)
-    
+
     # Resolución (si es video)
     if format_info.get('height'):
         label_parts.append(f"{format_info['height']}p")
-    
+
     # Tamaño del archivo
     if format_info.get('size_mb', 0) > 0:
         label_parts.append(f"{format_info['size_mb']:.2f}MB")
-    
+
     # Extensión del archivo
     if format_info.get('ext'):
         label_parts.append(format_info['ext'].upper())
-    
+
     return ' • '.join(label_parts)
 
 async def get_all_formats(info: dict) -> list:
     """Obtiene todos los formatos disponibles con manejo de errores"""
     formats = []
-    
+
     # Asegurarse de que hay formatos disponibles
     if not info.get('formats'):
         if info.get('url'):  # Si hay una URL directa
@@ -133,12 +133,12 @@ async def get_all_formats(info: dict) -> list:
             }
             formats.append(format_info)
         return formats
-    
+
     for fmt in info.get('formats', []):
         try:
             if not fmt.get('format_id'):
                 continue
-                
+
             size_mb = await get_format_size(fmt)
             format_info = {
                 'format_id': fmt['format_id'],
@@ -156,23 +156,23 @@ async def get_all_formats(info: dict) -> list:
         except Exception as e:
             logger.warning(f"Error al procesar formato {fmt.get('format_id')}: {str(e)}")
             continue
-    
+
     return formats
 
 async def create_keyboard(formats: list, page: int = 0, per_page: int = 8) -> InlineKeyboardMarkup:
     """Crea un teclado inline paginado con todos los formatos"""
     keyboard = []
-    
+
     def sort_key(f):
         """Función de ordenación segura que maneja valores None"""
         height = f.get('height', 0) or 0
         size_mb = f.get('size_mb', 0) or 0
         tbr = f.get('tbr', 0) or 0
         fps = f.get('fps', 0) or 0
-        
+
         has_video = 0 if f['vcodec'] != 'none' else 1
         has_audio = 0 if f['acodec'] != 'none' else 1
-        
+
         return (
             has_video,
             has_audio,
@@ -181,17 +181,17 @@ async def create_keyboard(formats: list, page: int = 0, per_page: int = 8) -> In
             -tbr,
             -fps
         )
-    
+
     formats.sort(key=sort_key)
-    
+
     # Paginación
     total_pages = (len(formats) + per_page - 1) // per_page
     start_idx = page * per_page
     end_idx = start_idx + per_page
-    
+
     # ID único para esta solicitud
     request_id = str(int(time.time()))
-    
+
     # Almacenar datos
     download_data[request_id] = {
         'formats': formats,
@@ -199,13 +199,13 @@ async def create_keyboard(formats: list, page: int = 0, per_page: int = 8) -> In
         'total_pages': total_pages,
         'expiry': time.time() + 3600  # Expira en 1 hora
     }
-    
+
     # Crear botones
     for fmt in formats[start_idx:end_idx]:
         label = create_button_label(fmt)
         callback_data = f"dl_{request_id}_{fmt['format_id']}"
         keyboard.append([InlineKeyboardButton(label, callback_data=callback_data)])
-    
+
     # Botones de navegación
     if total_pages > 1:
         nav_buttons = []
@@ -214,7 +214,7 @@ async def create_keyboard(formats: list, page: int = 0, per_page: int = 8) -> In
         if page < total_pages - 1:
             nav_buttons.append(InlineKeyboardButton("Siguiente ➡️", callback_data=f"pg_{request_id}_{page+1}"))
         keyboard.append(nav_buttons)
-    
+
     return InlineKeyboardMarkup(keyboard)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -236,17 +236,17 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         info = await get_video_info(url)
         info['original_url'] = url
-        
+
         if not info:
             raise ValueError("No se pudo obtener información del video")
-            
+
         formats = await get_all_formats(info)
-        
+
         if not formats:
             raise ValueError("No se encontraron formatos descargables")
-        
+
         keyboard = await create_keyboard(formats)
-        
+
         await msg.edit_text(
             f"📌 **{info.get('title', 'Video')[:100]}**\n\n"
             f"🕒 Duración: {info.get('duration', 'N/A')}s\n"
@@ -257,7 +257,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"Error en handle_url: {str(e)}", exc_info=True)
-        
+
         error_msg = "❌ Error: "
         if "Unsupported URL" in str(e):
             error_msg += "Este tipo de enlace no es soportado. Prueba con YouTube, Facebook, Instagram o TikTok."
@@ -265,24 +265,24 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
             error_msg += "El video parece ser privado o no está disponible."
         else:
             error_msg += f"Ocurrió un error al procesar el enlace. Detalles: {str(e)}"
-            
+
         await msg.edit_text(error_msg)
 
 async def handle_page_change(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
+
     try:
         _, request_id, page = query.data.split('_')
         page = int(page)
-        
+
         if request_id not in download_data or time.time() > download_data[request_id]['expiry']:
             await query.edit_message_text("❌ Los datos han expirado. Envía el enlace nuevamente.")
             return
-            
+
         formats = download_data[request_id]['formats']
         keyboard = await create_keyboard(formats, page)
-        
+
         await query.edit_message_reply_markup(reply_markup=keyboard)
     except Exception as e:
         logger.error(f"Error al cambiar página: {str(e)}")
@@ -291,26 +291,26 @@ async def handle_page_change(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def download_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
+
     try:
         _, request_id, format_id = query.data.split('_')
-        
+
         if request_id not in download_data or time.time() > download_data[request_id]['expiry']:
             await query.edit_message_text("❌ Los datos han expirado. Envía el enlace nuevamente.")
             return
-            
+
         selected_format = next(
             (fmt for fmt in download_data[request_id]['formats'] if fmt['format_id'] == format_id), 
             None
         )
-        
+
         if not selected_format:
             await query.edit_message_text("❌ Formato no disponible. Elige otro.")
             return
-            
+
         url = selected_format['url']
         file_type = 'video' if selected_format['vcodec'] != 'none' else 'audio'
-        
+
     except Exception as e:
         logger.error(f"Error en download_handler: {str(e)}")
         await query.edit_message_text("❌ Error al procesar la solicitud.")
@@ -338,7 +338,7 @@ async def download_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 }
             }
         }
-        
+
         file_ext = selected_format.get('ext', 'mp4' if file_type == 'video' else 'm4a')
         file_name = f"dl_{query.id}.{file_ext}"
         file_path = os.path.join(DOWNLOAD_DIR, file_name)
@@ -400,13 +400,19 @@ async def update_progress_message(msg, status: dict):
         if status.get('status') == 'downloading':
             downloaded = status.get('downloaded_bytes', 0) / (1024 * 1024)
             total = status.get('total_bytes', status.get('total_bytes_estimate', 0)) / (1024 * 1024)
-            percentage = (downloaded / total * 100) if total > 0 else 0
+            # Asegurarse de que total sea un número válido y no cero
+            if total and isinstance(total, (int, float)) and total > 0:
+                percentage = downloaded / total * 100
+                size_info = f"{downloaded:.2f}MB / {total:.2f}MB"
+            else:
+                percentage = 0
+                size_info = f"{downloaded:.2f}MB"
             speed = status.get('speed', 0) / (1024 * 1024) if status.get('speed') else 0
             eta = status.get('eta', 'N/A')
             text = (
                 f"🚀 *Descargando...*\n"
                 f"📊 Progreso: {percentage:.1f}%\n"
-                f"💾 Descargado: {downloaded:.2f}MB / {total:.2f}MB\n"
+                f"💾 Descargado: {size_info}\n"
                 f"⚡ Velocidad: {speed:.2f}MB/s\n"
                 f"⏰ ETA: {eta}s"
             )
@@ -414,7 +420,7 @@ async def update_progress_message(msg, status: dict):
             text = "✅ *Descarga completada, enviando archivo...*"
         else:
             text = "⚡ *Preparando descarga...*"
-        
+
         await msg.edit_text(text, parse_mode="Markdown")
     except Exception as e:
         logger.debug(f"No se pudo actualizar mensaje: {e}")
