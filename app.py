@@ -399,16 +399,20 @@ async def update_progress_message(msg, status: dict):
     try:
         if status.get('status') == 'downloading':
             downloaded = status.get('downloaded_bytes', 0) / (1024 * 1024)
-            total = status.get('total_bytes', status.get('total_bytes_estimate', 0)) / (1024 * 1024)
-            # Asegurarse de que total sea un número válido y no cero
-            if total and isinstance(total, (int, float)) and total > 0:
+            
+            # Obtener y validar el tamaño total
+            total_bytes = status.get('total_bytes') or status.get('total_bytes_estimate')
+            if total_bytes and isinstance(total_bytes, (int, float)) and total_bytes > 0:
+                total = total_bytes / (1024 * 1024)
                 percentage = downloaded / total * 100
                 size_info = f"{downloaded:.2f}MB / {total:.2f}MB"
             else:
                 percentage = 0
                 size_info = f"{downloaded:.2f}MB"
+            
             speed = status.get('speed', 0) / (1024 * 1024) if status.get('speed') else 0
             eta = status.get('eta', 'N/A')
+            
             text = (
                 f"🚀 *Descargando...*\n"
                 f"📊 Progreso: {percentage:.1f}%\n"
@@ -416,12 +420,14 @@ async def update_progress_message(msg, status: dict):
                 f"⚡ Velocidad: {speed:.2f}MB/s\n"
                 f"⏰ ETA: {eta}s"
             )
+            
         elif status.get('status') == 'finished':
             text = "✅ *Descarga completada, enviando archivo...*"
         else:
             text = "⚡ *Preparando descarga...*"
 
         await msg.edit_text(text, parse_mode="Markdown")
+        
     except Exception as e:
         logger.debug(f"No se pudo actualizar mensaje: {e}")
 
