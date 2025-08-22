@@ -219,7 +219,7 @@ async def create_keyboard(formats: list, page: int = 0, per_page: int = 8) -> In
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "⚡ **Bot Descargador VIP**\n\nEnvía un enlace de video para descargar.\n\nSoportado: YouTube, Facebook, Instagram, TikTok y más.",
+        "⚡ **VideoDown: Bot Descargador**\n\nEnvía un enlace de video para descargar.\n\nSoportado: Cualquier sitio web.",
         parse_mode="Markdown"
     )
 
