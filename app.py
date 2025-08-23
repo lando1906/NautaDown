@@ -1,3 +1,10 @@
+#!/usr/bin/env python3
+"""
+🎬 Video Downloader Bot - Versión Universal
+Bot de Telegram para descargar videos de cualquier plataforma usando yt-dlp
+Con sistema de fallback automático para formatos compatibles
+"""
+
 import os
 import re
 import json
@@ -5,7 +12,8 @@ import asyncio
 import logging
 import subprocess
 import shutil
-from typing import Optional, Tuple, List
+import glob
+from typing import Optional, Tuple, List, Dict, Any
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -20,11 +28,16 @@ from telegram.ext import (
 TOKEN = "8470331129:AAHBJWD_p9m7TMMYPD2iaBZBHLzCLUFpHQw"
 DOWNLOAD_DIR = "downloads"
 MAX_FILE_SIZE_MB = 2000  # Límite de 2GB (límite práctico de Telegram)
-SUPPORTED_PLATFORMS = [
-    "youtube.com", "youtu.be", "tiktok.com", "vm.tiktok.com",
-    "instagram.com", "twitter.com", "x.com", "reddit.com",
-    "facebook.com", "fb.watch", "vimeo.com", "dailymotion.com",
-    "twitch.tv", "bilibili.com", "nicovideo.jp", "rumble.com"
+MAX_RETRIES = 3  # Intentos máximos con diferentes formatos
+
+# Estrategias de descarga por orden de prioridad
+DOWNLOAD_STRATEGIES = [
+    "bestvideo+bestaudio/best",  # Mejor combinación
+    "best[height<=1080]",        # Máximo 1080p
+    "best[height<=720]",         # Máximo 720p  
+    "best[height<=480]",         # Máximo 480p
+    "best",                      # El mejor disponible
+    "worst",                     # El peor (como último recurso)
 ]
 
 # ==================== LOGGING CONFIG ====================
@@ -45,69 +58,127 @@ logger.info(f"Directorio de descargas: {os.path.abspath(DOWNLOAD_DIR)}")
 # ==================== FUNCIONES UTILITARIAS ====================
 def sanitize_title(title: str) -> str:
     """Limpia el título para usarlo como nombre de archivo"""
-    title = re.sub(r"[^\w\s-]", "", title.strip())
-    title = re.sub(r"\s+", "_", title)
+    title = re.sub(r'[<>:"/\\|?*]', '', title.strip())
+    title = re.sub(r'\s+', '_', title)
     return title[:100] or "untitled"
 
-def is_supported_url(url: str) -> bool:
-    """Verifica si la URL es de una plataforma soportada"""
-    return any(platform in url.lower() for platform in SUPPORTED_PLATFORMS)
-
-def prepare_download_command(url: str, format_id: str, safe_title: str) -> Tuple[List[str], str]:
-    """Prepara el comando de yt-dlp para descargar el video"""
-    output_path = os.path.join(DOWNLOAD_DIR, f"{safe_title}.%(ext)s")
+def prepare_download_command(url: str, format_spec: str, safe_title: str, retry_count: int = 0) -> Tuple[List[str], str]:
+    """Prepara el comando de yt-dlp con múltiples opciones de robustez"""
+    output_path = os.path.join(DOWNLOAD_DIR, f"{safe_title}_{retry_count}.%(ext)s")
+    
     cmd = [
-        "yt-dlp", "-f", format_id, 
+        "yt-dlp",
+        "-f", format_spec,
         "-o", output_path,
         "--no-playlist",
-        "--no-warnings",
-        "--quiet",
-        "--no-cache-dir",
         "--merge-output-format", "mp4",
-        url
+        "--retries", "10",
+        "--fragment-retries", "10",
+        "--socket-timeout", "30",
+        "--source-address", "0.0.0.0",
+        "--force-ipv4",
+        "--throttled-rate", "100K",
+        "--console-title",
+        "--no-part",
+        "--cookies-from-browser", "chrome"  # Intenta usar cookies del navegador
     ]
+    
+    # Añadir opciones específicas para ciertas plataformas
+    if "tiktok" in url.lower():
+        cmd.extend(["--referer", "https://www.tiktok.com/"])
+    elif "instagram" in url.lower():
+        cmd.extend(["--referer", "https://www.instagram.com/"])
+    
+    cmd.append(url)
+    
     return cmd, output_path.replace("%(ext)s", "mp4")
 
 def is_valid_video(file_path: str) -> bool:
     """Verifica si el archivo de video es válido"""
-    return (os.path.exists(file_path) and 
-            os.path.getsize(file_path) > 100 * 1024 and
-            file_path.endswith(('.mp4', '.mkv', '.webm')))
+    if not os.path.exists(file_path):
+        return False
+    
+    file_size = os.path.getsize(file_path)
+    if file_size < 100 * 1024:  # Menos de 100KB probablemente esté corrupto
+        return False
+    
+    # Verificar integridad básica del archivo
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", file_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10
+        )
+        return result.returncode == 0
+    except:
+        return file_path.endswith(('.mp4', '.mkv', '.webm'))
 
 def cleanup_files(basename: str):
     """Limpia todos los archivos temporales relacionados con una descarga"""
-    patterns = [".mp4", ".mkv", ".webm", ".part", ".temp", ".ytdl", ".jpg", ".png"]
+    patterns = [".mp4", ".mkv", ".webm", ".part", ".temp", ".ytdl", ".jpg", ".png", ".webp"]
     
     for pattern in patterns:
-        file_path = os.path.join(DOWNLOAD_DIR, f"{basename}{pattern}")
-        if os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-                logger.info(f"Archivo limpiado: {file_path}")
-            except Exception as e:
-                logger.warning(f"Error limpiando {file_path}: {e}")
-    
-    # Limpiar directorios de thumbs
-    thumb_dir = os.path.join(DOWNLOAD_DIR, f"{basename}thumbs")
-    if os.path.isdir(thumb_dir):
+        for file_path in glob.glob(os.path.join(DOWNLOAD_DIR, f"*{basename}*{pattern}")):
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                    logger.info(f"Archivo limpiado: {file_path}")
+                except Exception as e:
+                    logger.warning(f"Error limpiando {file_path}: {e}")
+
+async def safe_edit_message(message, text: str, **kwargs):
+    """Edita un mensaje de forma segura con manejo de errores"""
+    try:
+        await message.edit_text(text, **kwargs)
+    except Exception as e:
+        logger.warning(f"No se pudo editar mensaje: {e}")
+        # Intentar enviar como nuevo mensaje si falla la edición
         try:
-            shutil.rmtree(thumb_dir, ignore_errors=True)
-        except Exception as e:
-            logger.warning(f"Error limpiando directorio thumbs: {e}")
+            await message.chat.send_message(text, **kwargs)
+        except Exception as e2:
+            logger.error(f"También falló enviar nuevo mensaje: {e2}")
 
 # ==================== MANEJO DE DESCARGA ====================
-progress_pattern = re.compile(
-    r"\[download\]\s+(\d+\.\d+)%\s+of\s+~?([\d\.]+\w+)\s+at\s+([\d\.]+\w+/s)\s+ETA\s+([\d:]+)"
-)
+async def download_with_retry(url: str, message, title: str, max_retries: int = MAX_RETRIES) -> Optional[str]:
+    """
+    Intenta descargar el video con múltiples estrategias hasta que una funcione
+    """
+    safe_title = sanitize_title(title)
+    
+    for retry in range(max_retries):
+        strategy = DOWNLOAD_STRATEGIES[retry % len(DOWNLOAD_STRATEGIES)]
+        
+        await safe_edit_message(
+            message,
+            f"🔄 **Intentando descarga ({retry + 1}/{max_retries})**\n"
+            f"🎥 **Título:** {title[:50]}{'...' if len(title) > 50 else ''}\n"
+            f"⚙️ **Estrategia:** {strategy}",
+            parse_mode="Markdown"
+        )
+        
+        try:
+            cmd, expected_path = prepare_download_command(url, strategy, safe_title, retry)
+            downloaded_path = await stream_download_progress(cmd, message, url, title)
+            
+            if downloaded_path and is_valid_video(downloaded_path):
+                return downloaded_path
+                
+            # Si el path esperado es diferente al retornado
+            if is_valid_video(expected_path):
+                return expected_path
+                
+        except Exception as e:
+            logger.warning(f"Intento {retry + 1} falló: {e}")
+            await asyncio.sleep(2)  # Pequeña pausa entre intentos
+    
+    return None
 
 async def stream_download_progress(cmd: List[str], message, url: str, title: str) -> Optional[str]:
     """
     Ejecuta la descarga mostrando progreso en tiempo real
-    Retorna la ruta del archivo descargado o None en caso de error
     """
     filepath = None
-    last_progress = 0
-    safe_title = sanitize_title(title)
     
     try:
         process = await asyncio.create_subprocess_exec(
@@ -116,67 +187,51 @@ async def stream_download_progress(cmd: List[str], message, url: str, title: str
             stderr=asyncio.subprocess.STDOUT
         )
         
-        logger.info(f"Iniciando descarga: {url}")
+        logger.info(f"Iniciando descarga: {' '.join(cmd)}")
         
-        while True:
-            line_bytes = await process.stdout.readline()
-            if not line_bytes:
-                break
-                
+        # Leer salida en tiempo real
+        async for line_bytes in process.stdout:
             line = line_bytes.decode('utf-8', errors='ignore').strip()
             
-            # Log detallado para depuración
-            if any(x in line for x in ['[download]', 'ETA', 'Destination']):
-                logger.debug(f"yt-dlp: {line}")
-            
-            # Extraer progreso
-            match = progress_pattern.search(line)
-            if match:
-                percent, size, speed, eta = match.groups()
-                current_progress = float(percent)
-                
-                if current_progress > last_progress + 2:  # Actualizar cada 2% para no spamear
-                    last_progress = current_progress
-                    try:
-                        await message.edit_text(
-                            f"⏳ **Descargando...**\n"
-                            f"📏 **Tamaño:** {size}\n"
-                            f"📊 **Progreso:** {percent}%\n"
-                            f"⚡ **Velocidad:** {speed}\n"
-                            f"⏱ **ETA:** {eta}",
-                            parse_mode="Markdown"
-                        )
-                    except Exception as e:
-                        logger.warning(f"No se pudo actualizar progreso: {e}")
+            # Detectar progreso
+            if '[download]' in line and '%' in line:
+                try:
+                    parts = line.split()
+                    percent = parts[1] if len(parts) > 1 else '0%'
+                    size = parts[3] if len(parts) > 3 else 'N/A'
+                    speed = parts[5] if len(parts) > 5 else 'N/A'
+                    eta = parts[7] if len(parts) > 7 else 'N/A'
+                    
+                    await safe_edit_message(
+                        message,
+                        f"⏳ **Descargando...**\n"
+                        f"📏 **Tamaño:** {size}\n"
+                        f"📊 **Progreso:** {percent}\n"
+                        f"⚡ **Velocidad:** {speed}\n"
+                        f"⏱ **ETA:** {eta}",
+                        parse_mode="Markdown"
+                    )
+                except:
+                    pass
             
             # Detectar ruta del archivo
-            if "Destination:" in line:
-                filepath = line.split("Destination:")[-1].strip()
-            elif "has already been downloaded" in line:
-                filepath = line.split("has already been downloaded")[0].strip()
-            
-            await asyncio.sleep(0.1)
+            if 'Destination:' in line:
+                filepath = line.split('Destination:')[-1].strip()
+            elif 'has already been downloaded' in line:
+                filepath = line.split('has already been downloaded')[0].strip()
         
         # Esperar que el proceso termine
         await process.wait()
         
-        if process.returncode != 0:
-            error_msg = f"Error en descarga (código: {process.returncode})"
-            logger.error(error_msg)
-            await safe_edit_message(message, "❌ **Error en la descarga**\nEl video podría estar restringido o ser muy largo.", parse_mode="Markdown")
+        if process.returncode == 0:
+            return filepath
+        else:
+            logger.error(f"Error en descarga (código: {process.returncode})")
             return None
             
-    except asyncio.TimeoutError:
-        logger.error("Timeout en la descarga")
-        await safe_edit_message(message, "⏰ **Timeout excedido**\nEl video es demasiado largo o la conexión es lenta.", parse_mode="Markdown")
-        return None
     except Exception as e:
         logger.error(f"Error inesperado en descarga: {e}")
-        await safe_edit_message(message, "❌ **Error inesperado en la descarga**", parse_mode="Markdown")
         return None
-    
-    await safe_edit_message(message, "✅ **Descarga completada**", parse_mode="Markdown")
-    return filepath
 
 async def simulate_upload_progress(message, filepath: str, title: str):
     """Simula el progreso de subida a Telegram"""
@@ -217,67 +272,92 @@ async def simulate_upload_progress(message, filepath: str, title: str):
         logger.error(f"Error en simulación de subida: {e}")
         return False
 
-async def safe_edit_message(message, text: str, **kwargs):
-    """Edita un mensaje de forma segura con manejo de errores"""
+async def process_successful_download(context, msg, downloaded_path: str, title: str):
+    """Procesa un archivo descargado exitosamente"""
+    safe_title = sanitize_title(title)
+    
     try:
-        await message.edit_text(text, **kwargs)
+        # Verificar tamaño del archivo
+        file_size = os.path.getsize(downloaded_path)
+        size_mb = file_size / (1024 * 1024)
+        
+        if size_mb > MAX_FILE_SIZE_MB:
+            await safe_edit_message(
+                msg, 
+                f"❌ **Video demasiado grande**\n📦 **Tamaño:** {size_mb:.1f}MB",
+                parse_mode="Markdown"
+            )
+            cleanup_files(safe_title)
+            return
+        
+        # Simular subida
+        upload_success = await simulate_upload_progress(msg, downloaded_path, title)
+        
+        if upload_success:
+            await context.bot.send_chat_action(msg.chat.id, "upload_video")
+            
+            with open(downloaded_path, 'rb') as video_file:
+                await context.bot.send_video(
+                    chat_id=msg.chat.id,
+                    video=video_file,
+                    caption=f"🎥 **{title}**\n✅ Via @{context.bot.username}",
+                    parse_mode="Markdown",
+                    supports_streaming=True,
+                    read_timeout=60,
+                    write_timeout=60,
+                    connect_timeout=60
+                )
+            
+            await safe_edit_message(msg, "✅ **Video enviado correctamente**", parse_mode="Markdown")
+        
+        cleanup_files(safe_title)
+        
     except Exception as e:
-        logger.warning(f"No se pudo editar mensaje: {e}")
-        # Intentar enviar como nuevo mensaje si falla la edición
-        try:
-            await message.chat.send_message(text, **kwargs)
-        except Exception as e2:
-            logger.error(f"También falló enviar nuevo mensaje: {e2}")
+        logger.error(f"Error enviando video: {e}")
+        await safe_edit_message(msg, "❌ **Error al enviar el video**", parse_mode="Markdown")
+        cleanup_files(safe_title)
 
 # ==================== HANDLERS DE TELEGRAM ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Mensaje de bienvenida"""
     welcome_text = """
-    🎬 **Video Downloader Bot**
+    🎬 *Video Downloader*
     
-    **Soportado:** YouTube, TikTok, Instagram, Twitter/X, Reddit, Facebook, Vimeo, Twitch y más!
+    *Soporte ampliado:* Casi cualquier plataforma de video
     
-    **Cómo usar:**
+    *Cómo usar:*
     1. Envíame el enlace de un video
-    2. Elige el formato deseado
+    2. El bot intentará automáticamente descargarlo
     3. Espera a que se descargue y envíe
     
-    **Límites:**
+    *Límites:*
     • Máximo {}MB por video
     • Videos públicos sin restricciones
     
-    ⚠️ **Solo para uso personal y educativo**
+    ⚠️ *Solo para uso personal y educativo*
     """.format(MAX_FILE_SIZE_MB)
     
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Procesa URLs de video"""
+    """Procesa URLs de video de cualquier plataforma"""
     url = update.message.text.strip()
     
     if not url.startswith(("http://", "https://")):
         await update.message.reply_text("❌ **URL inválida**\nDebe comenzar con http:// o https://", parse_mode="Markdown")
         return
     
-    if not is_supported_url(url):
-        platforms = ", ".join(sorted(set([p.split('.')[0] for p in SUPPORTED_PLATFORMS])))
-        await update.message.reply_text(
-            f"❌ **Plataforma no soportada**\n\n"
-            f"**Soportadas:** {platforms}\n"
-            f"**URL recibida:** {url[:50]}...",
-            parse_mode="Markdown"
-        )
-        return
-    
     msg = await update.message.reply_text("🔍 **Analizando video...**", parse_mode="Markdown")
     
     try:
-        # Obtener información del video
-        info_process = await asyncio.create_subprocess_exec(
-            "yt-dlp", "--dump-json", "--no-playlist", "--skip-download", url,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            timeout=30
+        # Obtener información del video con timeout
+        info_process = await asyncio.wait_for(
+            asyncio.create_subprocess_exec(
+                "yt-dlp", "--dump-json", "--no-playlist", "--skip-download", url,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            ),
+            timeout=45
         )
         
         stdout, stderr = await info_process.communicate()
@@ -285,7 +365,15 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if info_process.returncode != 0:
             error_msg = stderr.decode() if stderr else "Error desconocido"
             logger.error(f"Error yt-dlp info: {error_msg}")
-            await safe_edit_message(msg, "❌ **No se pudo obtener información**\nEl video podría ser privado o estar eliminado.", parse_mode="Markdown")
+            
+            # Intentar con método alternativo incluso sin información
+            await safe_edit_message(msg, "🔄 **Intentando descarga directa...**", parse_mode="Markdown")
+            downloaded_path = await download_with_retry(url, msg, "video_descargado")
+            
+            if downloaded_path:
+                await process_successful_download(context, msg, downloaded_path, "Video Descargado")
+            else:
+                await safe_edit_message(msg, "❌ **No se pudo descargar el video**", parse_mode="Markdown")
             return
         
         video_info = json.loads(stdout.decode())
@@ -293,73 +381,49 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         duration = video_info.get("duration", 0)
         duration_str = f"{duration//60}:{duration%60:02d}" if duration else "Desconocida"
         
-        # Obtener formatos disponibles
-        formats_process = await asyncio.create_subprocess_exec(
-            "yt-dlp", "--list-formats", url,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            timeout=30
-        )
+        # Guardar contexto
+        context.user_data["url"] = url
+        context.user_data["title"] = title
         
-        stdout, stderr = await formats_process.communicate()
-        
-        if formats_process.returncode != 0:
-            await safe_edit_message(msg, "❌ **Error al obtener formatos disponibles**", parse_mode="Markdown")
-            return
-        
-        formats_output = stdout.decode()
-        buttons = []
-        
-        # Parsear formatos
-        for line in formats_output.split('\n'):
-            if ('video only' not in line.lower() and 
-                ('mp4' in line.lower() or 'webm' in line.lower() or 'mkv' in line.lower())):
-                parts = line.split()
-                if len(parts) >= 2:
-                    format_id = parts[0]
-                    description = " ".join(parts[1:])
-                    
-                    if len(description) > 50:
-                        description = description[:47] + "..."
-                    
-                    buttons.append([InlineKeyboardButton(
-                        f"🎥 {description}", 
-                        callback_data=f"dl_{format_id}"
-                    )])
-        
-        if not buttons:
-            await safe_edit_message(msg, "❌ **No hay formatos de video disponibles**", parse_mode="Markdown")
-            return
-        
-        # Limitar a 6 opciones y añadir cancelar
-        buttons = buttons[:6]
-        buttons.append([InlineKeyboardButton("❌ Cancelar", callback_data="cancel")])
-        
-        keyboard = InlineKeyboardMarkup(buttons)
+        # Ofrecer opciones de formato o descarga directa
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🎥 Mejor Calidad", callback_data="dl_best")],
+            [InlineKeyboardButton("📱 720p", callback_data="dl_720")],
+            [InlineKeyboardButton("📼 480p", callback_data="dl_480")],
+            [InlineKeyboardButton("🚀 Descarga Automática", callback_data="dl_auto")],
+            [InlineKeyboardButton("❌ Cancelar", callback_data="cancel")]
+        ])
         
         await safe_edit_message(
             msg,
             f"📹 **{title}**\n"
             f"⏱ **Duración:** {duration_str}\n"
             f"🔗 **URL:** {url[:30]}...\n\n"
-            f"**Selecciona el formato:**",
+            f"**Selecciona la calidad o usa automático:**",
             reply_markup=keyboard,
             parse_mode="Markdown"
         )
         
-        # Guardar contexto
-        context.user_data["url"] = url
-        context.user_data["title"] = title
-        context.user_data["message_id"] = msg.message_id
-        
     except asyncio.TimeoutError:
-        await safe_edit_message(msg, "⏰ **Timeout al analizar el video**\nIntenta nuevamente.", parse_mode="Markdown")
+        await safe_edit_message(msg, "⏰ **Timeout al analizar el video**\nIntentando descarga automática...", parse_mode="Markdown")
+        # Intentar descarga automática incluso con timeout
+        downloaded_path = await download_with_retry(url, msg, "video_descargado")
+        if downloaded_path:
+            await process_successful_download(context, msg, downloaded_path, "Video Descargado")
+        else:
+            await safe_edit_message(msg, "❌ **No se pudo descargar el video**", parse_mode="Markdown")
     except Exception as e:
         logger.error(f"Error procesando URL: {e}")
-        await safe_edit_message(msg, "❌ **Error al procesar el video**", parse_mode="Markdown")
+        await safe_edit_message(msg, "❌ **Error al procesar el video**\nIntentando descarga automática...", parse_mode="Markdown")
+        # Intentar descarga automática incluso con error
+        downloaded_path = await download_with_retry(url, msg, "video_descargado")
+        if downloaded_path:
+            await process_successful_download(context, msg, downloaded_path, "Video Descargado")
+        else:
+            await safe_edit_message(msg, "❌ **No se pudo descargar con ningún método**", parse_mode="Markdown")
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Maneja las acciones de los botones inline"""
+    """Maneja las acciones de los botones inline con múltiples estrategias"""
     query = update.callback_query
     await query.answer()
     
@@ -375,54 +439,53 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("✅ **Operación cancelada**", parse_mode="Markdown")
         return
     
-    if query.data.startswith("dl_"):
-        format_id = query.data[3:]
-        safe_title = sanitize_title(title)
-        
-        msg = await query.edit_message_text(
-            f"⏳ **Iniciando descarga...**\n"
-            f"🎥 **Título:** {title[:50]}{'...' if len(title) > 50 else ''}\n"
-            f"📊 **Formato:** {format_id}",
-            parse_mode="Markdown"
-        )
-        
-        try:
-            # Preparar y ejecutar descarga
-            cmd, expected_path = prepare_download_command(url, format_id, safe_title)
+    # Mapear selección a estrategia
+    format_map = {
+        "dl_best": "bestvideo+bestaudio/best",
+        "dl_720": "best[height<=720]",
+        "dl_480": "best[height<=480]",
+        "dl_auto": "best"  # Estrategia automática
+    }
+    
+    format_spec = format_map.get(query.data, "bestvideo+bestaudio/best")
+    
+    msg = await query.edit_message_text(
+        f"⏳ **Iniciando descarga...**\n"
+        f"🎥 **Título:** {title[:50]}{'...' if len(title) > 50 else ''}\n"
+        f"⚙️ **Calidad:** {format_spec}",
+        parse_mode="Markdown"
+    )
+    
+    try:
+        # Intentar descarga con la estrategia seleccionada
+        if query.data == "dl_auto":
+            # Para modo automático, probar todas las estrategias
+            downloaded_path = await download_with_retry(url, msg, title)
+        else:
+            # Para modo específico, usar solo la estrategia seleccionada
+            safe_title = sanitize_title(title)
+            cmd, expected_path = prepare_download_command(url, format_spec, safe_title)
             downloaded_path = await stream_download_progress(cmd, msg, url, title)
             
-            if not downloaded_path or not is_valid_video(downloaded_path):
-                if is_valid_video(expected_path):
-                    downloaded_path = expected_path
-                else:
-                    await safe_edit_message(msg, "❌ **Error: Archivo inválido**", parse_mode="Markdown")
-                    cleanup_files(safe_title)
-                    return
+            if not downloaded_path and is_valid_video(expected_path):
+                downloaded_path = expected_path
+        
+        if downloaded_path:
+            await process_successful_download(context, msg, downloaded_path, title)
+        else:
+            await safe_edit_message(msg, "❌ **No se pudo descargar**\nIntentando método alternativo...", parse_mode="Markdown")
+            # Fallback a método automático
+            downloaded_path = await download_with_retry(url, msg, title)
+            if downloaded_path:
+                await process_successful_download(context, msg, downloaded_path, title)
+            else:
+                await safe_edit_message(msg, "❌ **No se pudo descargar con ningún método**", parse_mode="Markdown")
+                cleanup_files(sanitize_title(title))
             
-            # Simular y realizar subida
-            upload_success = await simulate_upload_progress(msg, downloaded_path, title)
-            
-            if upload_success:
-                await context.bot.send_chat_action(query.message.chat.id, "upload_video")
-                
-                with open(downloaded_path, 'rb') as video_file:
-                    await context.bot.send_video(
-                        chat_id=query.message.chat.id,
-                        video=video_file,
-                        caption=f"🎥 **{title}**\n✅ Descargado via @{context.bot.username}",
-                        parse_mode="Markdown",
-                        supports_streaming=True
-                    )
-                
-                await safe_edit_message(msg, "✅ **Video enviado correctamente**", parse_mode="Markdown")
-            
-            # Limpieza final
-            cleanup_files(safe_title)
-            
-        except Exception as e:
-            logger.error(f"Error en callback: {e}")
-            await safe_edit_message(msg, "❌ **Error crítico al procesar el video**", parse_mode="Markdown")
-            cleanup_files(safe_title)
+    except Exception as e:
+        logger.error(f"Error en callback: {e}")
+        await safe_edit_message(msg, "❌ **Error crítico al procesar el video**", parse_mode="Markdown")
+        cleanup_files(sanitize_title(title))
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Cancela cualquier operación en curso"""
@@ -462,7 +525,7 @@ def main():
         
         # Información de inicio
         logger.info("=" * 50)
-        logger.info("🎬 Video Downloader Bot - INICIANDO")
+        logger.info("🎬 Video Downloader Bot Universal - INICIANDO")
         logger.info(f"📁 Descargas en: {os.path.abspath(DOWNLOAD_DIR)}")
         logger.info(f"📏 Límite de tamaño: {MAX_FILE_SIZE_MB}MB")
         logger.info("=" * 50)
