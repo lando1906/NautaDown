@@ -6,7 +6,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 # 🔐 Token embebido directamente
 TOKEN = "8470331129:AAHBJWD_p9m7TMMYPD2iaBZBHLzCLUFpHQw"
-WEBHOOK_URL = "https://videodown-77kj.onrender.com/"  # Reemplaza con tu URL real
+WEBHOOK_URL = "https://videodown-77kj.onrender.com/"
 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
