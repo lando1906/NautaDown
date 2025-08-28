@@ -1,13 +1,8 @@
 flask
 requests
 python-dotenv
-deltabot-cli
 yt-dlp
-qrcode
 python-telegram-bot
 python-telegram-bot[webhooks]
 asyncio
-aria2p
-werkzeug
 gunicorn
-psutil
