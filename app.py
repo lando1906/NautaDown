@@ -1,128 +1,172 @@
 import os
-import subprocess
-import asyncio
-import requests
+import re
+import tempfile
+import logging
+import traceback
 from flask import Flask, request
-from telegram import Update, Bot
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
+import requests
+import yt_dlp
 
-# 🔐 Token y URL del webhook
-TOKEN = "8470331129:AAHBJWD_p9m7TMMYPD2iaBZBHLzCLUFpHQw"
+# Configuración
+TELEGRAM_TOKEN = "8470331129:AAHBJWD_p9m7TMMYPD2iaBZBHLzCLUFpHQw"
+BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 WEBHOOK_URL = "https://videodown-77kj.onrender.com"
 
-# 📁 Directorio de descargas
-DOWNLOAD_DIR = "downloads"
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+MAX_UPLOAD_MB = 48
+MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 
-# 🚀 Inicialización de Flask y Telegram
 app = Flask(__name__)
-bot = Bot(token=TOKEN)
-application = Application.builder().token(TOKEN).build()
 
-# 📌 Comando /start
-async def start(update: Update, context):
-    await update.message.reply_text(
-        "👋 ¡Hola! Soy tu bot descargador de videos.\n\n📥 Envíame un enlace de YouTube o similar y lo descargaré en calidad 480p.\n\nEscribe /help para ver todo lo que puedo hacer."
-    )
+# Configuración de logging
+logging.basicConfig(
+    format='[%(asctime)s] %(levelname)s: %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-# 🛠 Comando /help
-async def help_command(update: Update, context):
-    await update.message.reply_text(
-        "🛠 Comandos disponibles:\n"
-        "/start – Mensaje de bienvenida\n"
-        "/help – Muestra esta ayuda\n"
-        "/info – Información sobre el bot\n"
-        "/formato – Explica el formato de descarga\n"
-        "/estado – Verifica si el bot está activo\n"
-        "/cancelar – Cancela la operación actual\n\n"
-        "📌 Solo envíame un enlace de video para comenzar la descarga."
-    )
+def send_message(chat_id, text, reply_to=None):
+    url = f"{BASE_URL}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML"
+    }
+    if reply_to:
+        payload['reply_to_message_id'] = reply_to
+    response = requests.post(url, json=payload)
+    if not response.ok:
+        logger.error(f"Error enviando mensaje: {response.text}")
 
-# ℹ️ Comando /info
-async def info(update: Update, context):
-    await update.message.reply_text(
-        "ℹ️ Este bot fue creado para ayudarte a descargar videos en calidad 480p usando yt-dlp.\n"
-        "🔧 Desarrollado por Landitho con ❤️ y código abierto.\n"
-        "🌐 Compatible con YouTube, Vimeo, Twitter y más."
-    )
+def send_document(chat_id, file_path, filename, caption="", reply_to=None):
+    url = f"{BASE_URL}/sendDocument"
+    with open(file_path, "rb") as f:
+        files = {"document": (filename, f)}
+        data = {
+            "chat_id": chat_id,
+            "caption": caption
+        }
+        if reply_to:
+            data['reply_to_message_id'] = reply_to
+        response = requests.post(url, data=data, files=files)
+    if not response.ok:
+        logger.error(f"Error enviando documento: {response.text}")
 
-# 🎞️ Comando /formato
-async def formato(update: Update, context):
-    await update.message.reply_text(
-        "🎞️ El bot descarga el video en el mejor formato disponible hasta 480p.\n"
-        "Esto garantiza buena calidad sin consumir demasiado espacio.\n"
-        "¿Quieres soporte para otras resoluciones o audio MP3? ¡Dímelo!"
-    )
+def is_valid_url(text):
+    url_regex = re.compile(r'^https?://.+$')
+    return url_regex.match(text.strip())
 
-# ✅ Comando /estado
-async def estado(update: Update, context):
-    await update.message.reply_text("✅ El bot está activo y listo para descargar videos.")
-
-# 🚫 Comando /cancelar
-async def cancelar(update: Update, context):
-    await update.message.reply_text("🚫 No hay ninguna operación activa que cancelar.")
-
-# 📥 Manejo de mensajes con enlaces
-async def handle_message(update: Update, context):
-    url = update.message.text.strip()
-    await update.message.reply_text("⏳ Descargando video en 480p...")
-
+def download_with_ytdlp(url, download_dir):
+    ydl_opts = {
+        'outtmpl': os.path.join(download_dir, '%(title).40s.%(ext)s'),
+        'format': 'mp4/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best/best',
+        'noplaylist': True,
+        'max_filesize': MAX_UPLOAD_BYTES,
+        'retries': 2,
+        'nocheckcertificate': True,
+        'quiet': True,
+        'no_warnings': True
+    }
+    result = {}
     try:
-        output_template = os.path.join(DOWNLOAD_DIR, "%(title)s.%(ext)s")
-        cmd = [
-            "yt-dlp",
-            "-f", "best[height<=480]",
-            "-o", output_template,
-            url
-        ]
-        subprocess.run(cmd, check=True)
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+        
+        if 'requested_downloads' in info and info['requested_downloads']:
+            result['download_path'] = info['requested_downloads'][0]['filepath']
+        elif '_filename' in info:
+            result['download_path'] = info['_filename']
+        else:
+            raise Exception("No se pudo determinar el archivo descargado")
 
-        # 📦 Encuentra el archivo más reciente
-        files = sorted(os.listdir(DOWNLOAD_DIR), key=lambda x: os.path.getmtime(os.path.join(DOWNLOAD_DIR, x)), reverse=True)
-        latest_file = os.path.join(DOWNLOAD_DIR, files[0])
-
-        # 📤 Envío del video
-        with open(latest_file, "rb") as f:
-            await update.message.reply_video(video=f)
-
-        os.remove(latest_file)
-
+        result['title'] = info.get('title', "descarga")
+        result['ext'] = os.path.splitext(result['download_path'])[1][1:]
+        result['size'] = os.path.getsize(result['download_path'])
+        return result
+    except yt_dlp.utils.DownloadError as e:
+        logger.warning(f'yt-dlp error: {str(e)}')
+        raise Exception("No fue posible descargar el video con yt-dlp.")
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise
 
-# 🧠 Registro de handlers
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("help", help_command))
-application.add_handler(CommandHandler("info", info))
-application.add_handler(CommandHandler("formato", formato))
-application.add_handler(CommandHandler("estado", estado))
-application.add_handler(CommandHandler("cancelar", cancelar))
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-# 🔄 Endpoint del webhook
-@app.route(f"/{TOKEN}", methods=["POST"])
+@app.route("/webhook", methods=["POST"])
 def webhook():
-    update = Update.de_json(request.get_json(force=True), bot)
-    asyncio.run(application.update_queue.put(update))
-    return "OK"
+    try:
+        update = request.get_json(force=True)
+        logger.info(f"Update recibido: {update}")
+        
+        if "message" in update:
+            message = update["message"]
+            chat_id = message["chat"]["id"]
+            message_id = message["message_id"]
+            text = message.get("text", "")
 
-# 🟢 Endpoint raíz
-@app.route("/")
-def index():
-    return "Bot activo."
+            if "entities" in message and message["entities"][0].get("type") == "bot_command":
+                command = text.split()[0].lower()
+                if command == "/start":
+                    send_message(chat_id, (
+                        "👋 ¡Hola! Soy un bot para descargar videos de casi cualquier plataforma.\n"
+                        "Envíame cualquier URL de video soportada y te lo enviaré de vuelta como archivo (máx. 48MB).\n\n"
+                        "⏳ Procesa un link por vez, espera confirmación antes de enviar otro.\n"
+                        "Usa /help para obtener más información."
+                    ), reply_to=message_id)
+                elif command == "/help":
+                    send_message(chat_id, (
+                        "ℹ️ <b>Instrucciones</b>:\n"
+                        "1. Envía una URL de video (YouTube, Vimeo, Twitter, TikTok, etc.).\n"
+                        f"2. El video debe pesar menos de {MAX_UPLOAD_MB} MB.\n"
+                        "3. Si falla, revisa la compatibilidad en https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md\n\n"
+                        "⚠️ Ten en cuenta los límites de Telegram y Render (archivos grandes serán rechazados)."
+                    ), reply_to=message_id)
+                else:
+                    send_message(chat_id, "Comando no reconocido. Usa /help.", reply_to=message_id)
+                return "ok"
 
-# 🔧 Registro del webhook en Telegram
+            if is_valid_url(text):
+                send_message(chat_id, "⏳ Descargando video, por favor espera...", reply_to=message_id)
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    try:
+                        info = download_with_ytdlp(text, tmpdir)
+                        if info['size'] >= MAX_UPLOAD_BYTES:
+                            send_message(chat_id,
+                                f"⚠️ Archivo demasiado grande para Telegram (> {MAX_UPLOAD_MB} MB).", reply_to=message_id)
+                            return "ok"
+                        caption = f"🎬 {info['title']}.{info['ext']} (descargado por bot)"
+                        send_document(chat_id, info['download_path'], os.path.basename(info['download_path']),
+                                      caption=caption, reply_to=message_id)
+                    except Exception as e:
+                        logger.error(f"Error descargando video: {e}")
+                        send_message(chat_id,
+                            f"❌ Error procesando la URL: {str(e)}.\n\n¿La URL requiere login o tiene DRM? Prueba con otro video.",
+                            reply_to=message_id)
+                return "ok"
+                
+            send_message(chat_id, 
+                "🤖 Solo acepto URLs de video. Usa /help para instrucciones.", reply_to=message_id)
+            return "ok"
+        else:
+            logger.warning("Update ignorado (no es tipo mensaje)")
+            return "ok"
+    except Exception as ex:
+        logger.error(f"Error global en webhook: {traceback.format_exc()}")
+        return "ok"
+
+@app.route('/setwebhook', methods=['GET', 'POST'])
 def set_webhook():
-    url = f"https://api.telegram.org/bot{TOKEN}/setWebhook"
-    response = requests.post(url, data={"url": f"{WEBHOOK_URL}/{TOKEN}"})
-    print("✅ Webhook registrado:", response.json())
+    if not WEBHOOK_URL:
+        return "Define la URL del webhook", 400
+    setwebhook_url = f"{BASE_URL}/setWebhook"
+    target_url = f"{WEBHOOK_URL}/webhook"
+    response = requests.post(setwebhook_url, json={'url': target_url})
+    if response.ok:
+        return "Webhook activado correctamente"
+    else:
+        logger.error(f"Respuesta Telegram setWebhook: {response.text}")
+        return f"Error activando webhook: {response.text}", 500
 
-# 🏁 Inicio del servidor
+@app.route("/", methods=["GET"])
+def healthcheck():
+    return "Bot online", 200
+
 if __name__ == "__main__":
-    set_webhook()
-    port = int(os.environ.get("PORT", 10000))
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=port,
-        webhook_url=f"{WEBHOOK_URL}/{TOKEN}"
-    )
+    app.run(host='0.0.0.0', port=10000, debug=True)
